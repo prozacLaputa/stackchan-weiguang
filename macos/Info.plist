@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>微光蓝牙</string>
+	<key>CFBundleExecutable</key>
+	<string>WeiguangBluetooth</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.prozaclaputa.weiguang.bluetooth</string>
+	<key>CFBundleName</key>
+	<string>微光蓝牙</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>通过蓝牙把本机 Codex 的任务状态同步到你的微光机器人。</string>
+</dict>
+</plist>

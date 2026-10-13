@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+weiguang_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$weiguang_dir/.venv/bin/python" ]; then
+    exec "$weiguang_dir/.venv/bin/python" "$weiguang_dir/bridge/service.py" "$@"
+fi
+exec python3 "$weiguang_dir/bridge/service.py" "$@"

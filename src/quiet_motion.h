@@ -146,6 +146,19 @@ public:
         if(screenTouch||(headTouch&&!petting)){bool released=release();phase=0;feedback.finish(activePetEvent,released?"stopped":"failed",released?"screen-touch":fault);activePetEvent=0;Serial.println("MOTION\tstopped\ttouch");return;}
         if(uint32_t(now-phaseAt)>1800){fail("timeout");return;}
         int target=phase%2?plan.target:plan.origin;
+        // 反馈只能对照已经发出的目标。新指令有 60 ms 行程时间，不能刚写入就判定未跟上。
+        bool sampleDue=uint32_t(now-sampledAt)>=100;
+        int pos=-1;
+        if(sampleDue){
+            uint32_t sampleGap=uint32_t(now-sampledAt);sampledAt=now;
+            if(!readPosition(pos)){fail(readError);return;}
+            if(!plan.contains(pos)){fail("feedback-range");return;}
+            if(petting&&std::abs(pos-commanded)>14){
+                Serial.printf("MOTION\tfollow-error\tposition=%d\tcommand=%d\tcommand_age=%u\tsample_gap=%u\tphase=%d\tphase_age=%u\tload=%d\n",
+                    pos,commanded,unsigned(now-commandAt),unsigned(sampleGap),phase,unsigned(now-phaseAt),bus.ReadLoad(-1));
+                fail("pet-follow-error");return;
+            }
+        }
         if(petting&&uint32_t(now-commandAt)>=40){
             int from=phase%2?plan.origin:plan.target;
             int next=petTrajectory(from,target,now-phaseAt);
@@ -155,11 +168,7 @@ public:
             }
             commandAt=now;
         }
-        if(uint32_t(now-sampledAt)<100)return;
-        sampledAt=now;int pos=-1;
-        if(!readPosition(pos)){fail(readError);return;}
-        if(!plan.contains(pos)){fail("feedback-range");return;}
-        if(petting&&std::abs(pos-commanded)>14){fail("pet-follow-error");return;}
+        if(!sampleDue)return;
         if(uint32_t(now-phaseAt)<(petting?950u:700u))return;
         // 实机小步插值在抬头端有约 5 步死区；回位仍要求 4 步内，防止休息位置漂移。
         int tolerance=petting&&(phase%2)?6:4;

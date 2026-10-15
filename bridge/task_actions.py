@@ -1,5 +1,7 @@
 """只读解析仍待回应的本地会话；跳转由原生控制台执行，不接管或回复任务。"""
 import json
+import math
+import re
 from pathlib import Path
 import sys
 import uuid
@@ -19,6 +21,21 @@ def pending_tasks(tasks):
     return [dict(id=t['id'], title=clean_reason(t.get('title'), 80) or '未命名任务',
                  reason=clean_reason(t.get('wait_reason')) or '待你在 Codex 回应')
             for t in tasks[:8] if t.get('state') == 'needs_input' and valid_thread_id(t.get('id'))]
+
+
+def completion_events(tasks, now):
+    """仅供本机可选语音提醒：明确完成、30秒内、Top8；不携带回复或结果正文。"""
+    events = []
+    for task in tasks[:8]:
+        stamp, key = task.get('completed_at'), task.get('done_key')
+        if (task.get('state') != 'done' or not valid_thread_id(task.get('id'))
+                or not isinstance(key, str) or not re.fullmatch('[0-9a-f]{16}', key)
+                or isinstance(stamp, bool) or not isinstance(stamp, (int, float))
+                or not math.isfinite(stamp) or not 0 <= now - stamp <= 30):
+            continue
+        events.append(dict(id=task['id'], title=clean_reason(task.get('title'), 80) or '未命名任务',
+                           key=key, completed_at=stamp))
+    return events
 
 
 def resolve_pending(source, thread_id):

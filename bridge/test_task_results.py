@@ -10,7 +10,7 @@ from task_actions import pending_tasks, resolve_pending
 from test_monitor import event, item, ask, reply
 from test_runtime import FakeSerial, port
 
-ID='00000000-0000-0000-0046-000000000001'
+ID='00000000-0000-4000-8000-000000000001'
 
 
 class ResultTests(unittest.TestCase):

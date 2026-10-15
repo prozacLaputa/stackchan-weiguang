@@ -78,6 +78,8 @@ class DiagnosticTests(unittest.TestCase):
     def test_export_contains_only_whitelisted_fields_even_with_injected_private_values(self):
         secret='DO_NOT_EXPORT_私密正文_and_key'
         raw=snapshot();raw.update(pending_tasks=[{'title':secret,'id':secret,'reason':secret}],port=secret,error=secret)
+        raw['completion_events']=[{'title':secret,'id':secret,'key':secret,'completed_at':time.time()}]
+        raw['desk_extras']={'music':{'title':secret,'artist':secret},'recap':{'rows':[{'id':secret,'title':secret}]}}
         raw['device'].update(firmware=secret,pet_reason=secret,chat=secret)
         raw['unknown']=secret
         self.journal.observe(raw)

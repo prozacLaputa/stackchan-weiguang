@@ -107,10 +107,12 @@ struct BridgeState: Codable {
     var transport:String?, error:String?, device_error:String?
     var tasks:Int, running:Int, needs_input:Int
     var ack_ms:Double?, device_at:Double?, device_supported:Bool?, device:Device?
+    var desk_extras:DeskExtrasState?=nil
     var pending_tasks:[PendingTask]?
     var diagnostics_ok:Bool?
     var companion:Companion?, companion_at:Double?, companion_error:String?
     var note:DeskNote?=nil, note_at:Double?=nil, note_error:String?=nil
+    var pid:Int?=nil, last_good_at:Double?=nil, completion_events:[VoiceTaskCompletion]?=nil
 }
 struct PanelState: Codable {
     var installed:Bool
@@ -127,6 +129,10 @@ struct PanelState: Codable {
         return now-stamp>=0 && now-stamp<8
     }
     var pendingFresh:Bool {installed && paused != true && fresh == true && bridge?.data_source == "ok"}
+    var taskVoiceSnapshot:VoiceTaskSnapshot? {
+        guard pendingFresh,let b=bridge,let pid=b.pid,let stamp=b.last_good_at,let events=b.completion_events else {return nil}
+        return VoiceTaskSnapshot(pid:pid,at:stamp,events:events)
+    }
     func companionFresh(at now:Double = Date().timeIntervalSince1970)->Bool {
         guard connected(),let b=bridge,b.companion != nil,b.companion_error == nil,let stamp=b.companion_at else{return false}
         return now-stamp >= 0 && now-stamp < 8
@@ -141,6 +147,7 @@ let accent=Color(red:0.45,green:0.85,blue:0.80)
 let quiet=Color.white.opacity(0.5)
 
 final class PanelModel:ObservableObject {
+    var onTaskSnapshot:((VoiceTaskSnapshot?)->Void)?
     @Published var state:PanelState?
     @Published var busy=false
     @Published var loading=false
@@ -174,10 +181,10 @@ final class PanelModel:ObservableObject {
     var device:Device? {state?.bridge?.device}
     var companion:Companion? {state?.bridge?.companion}
     var note:DeskNote? {state?.bridge?.note}
-    var noteAvailable:Bool {available && device?.firmware=="0.46" && state?.noteFresh()==true}
+    var noteAvailable:Bool {available && ["0.46","0.47"].contains(device?.firmware ?? "") && state?.noteFresh()==true}
     var noteConflict:Bool {noteDirty && noteBaseRevision != note?.revision}
     var noteStatus:String {
-        if let version=device?.firmware,version != "0.46"{return "连接 USB 更新后可用"}
+        if let version=device?.firmware,!["0.46","0.47"].contains(version){return "连接 USB 更新后可用"}
         guard noteAvailable,let n=note else{return "等待机器人同步 · 草稿可继续编辑"}
         if n.save_error==1{return "上次保存失败，原便签仍保留"}
         return n.state=="active" ? "已贴在机器人上" : n.state=="done" ? "已收起 · 可以重新贴上" : "还没有便签"
@@ -220,13 +227,13 @@ final class PanelModel:ObservableObject {
             self.refresh()
         }
     }
-    var focusAvailable:Bool {available && ["0.34","0.35","0.36","0.37","0.38","0.39","0.40","0.41","0.42","0.43","0.44","0.45","0.46"].contains(device?.firmware ?? "") && state?.companionFresh() == true}
+    var focusAvailable:Bool {available && ["0.34","0.35","0.36","0.37","0.38","0.39","0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47"].contains(device?.firmware ?? "") && state?.companionFresh() == true}
     var companionSettingsAvailable:Bool {available && device?.daily != nil && device?.away_rest != nil && device?.greeting != nil && device?.affection != nil}
     var focusRunning:Bool {companion?.focus_state == "running"}
     var focusPaused:Bool {companion?.focus_state == "paused"}
     var focusActive:Bool {focusRunning || focusPaused}
     var focusNextAvailable:Bool {focusAvailable && companion?.resting == true && companion?.focus_state == "done"}
-    var focusPauseAvailable:Bool {focusAvailable && ["0.40","0.41","0.42","0.43","0.44","0.45","0.46"].contains(device?.firmware ?? "")}
+    var focusPauseAvailable:Bool {focusAvailable && ["0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47"].contains(device?.firmware ?? "")}
     var focusSummaryTitle:String {
         guard state?.companionFresh() == true,let c=companion else{return "等待机器人同步"}
         guard let day=c.today_day else{return "更新固件后可记录"}
@@ -372,6 +379,7 @@ final class PanelModel:ObservableObject {
             next.bridge?.note=latest.note;next.bridge?.note_at=current;next.bridge?.note_error=latest.note_error
         }
         state=next
+        onTaskSnapshot?(next.taskVoiceSnapshot)
         acceptNote()
         if next.companionFresh(),let c=next.bridge?.companion,(c.focus_state=="running" || c.focus_state=="paused" || c.focus_state=="done"),[15,25,45].contains(c.chosenSeconds/60){focusMinutes=c.chosenSeconds/60}
         if next.deviceFresh(),let d=next.bridge?.device {acceptDevice(d)}
@@ -399,7 +407,7 @@ final class PanelModel:ObservableObject {
         run([root.appendingPathComponent("app/service.py").path,"status","--json"]){[weak self] result in
             guard let self=self else{return};self.loading=false
             if case .success(let data)=result,let next=try? JSONDecoder().decode(PanelState.self,from:data){self.accept(next)}
-            else{self.state=nil;self.message="无法读取本机服务，请检查安装是否完整。";self.success=false}
+            else{self.state=nil;self.onTaskSnapshot?(nil);self.message="无法读取本机服务，请检查安装是否完整。";self.success=false}
         }
     }
     func issue(_ request:[String:Any],saving:Bool){
@@ -478,10 +486,145 @@ struct PetFace:View {
         }.foregroundColor(accent).frame(width:108,height:80)
     }
 }
+
+// 控制台通用控件；只管理视觉和点击反馈，不改变保存或设备交互规则。
+struct PanelActionStyle:ButtonStyle {
+    var prominent=false
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovering=false
+    func makeBody(configuration:Configuration)->some View {
+        configuration.label.font(.system(size:12,weight:.medium))
+            .padding(.horizontal,14).padding(.vertical,9)
+            .foregroundColor(prominent ? Color(red:0.04,green:0.12,blue:0.13):Color.white.opacity(0.87))
+            .background(RoundedRectangle(cornerRadius:10).fill(prominent ? accent:Color.white.opacity(hovering ? 0.10:0.055)))
+            .overlay(RoundedRectangle(cornerRadius:10).stroke(prominent ? accent.opacity(0.3):Color.white.opacity(hovering ? 0.15:0.07)))
+            .opacity(enabled ? 1:0.35).scaleEffect(configuration.isPressed && !reduceMotion ? 0.98:1)
+            .animation(reduceMotion ? nil:.easeOut(duration:0.12),value:configuration.isPressed)
+            .onHover {hovering=$0}
+    }
+}
+struct PanelOptionStyle:ButtonStyle {
+    var selected:Bool
+    @Environment(\.isEnabled) private var enabled
+    @State private var hovering=false
+    func makeBody(configuration:Configuration)->some View {
+        configuration.label.foregroundColor(selected ? accent:Color.white.opacity(0.65))
+            .background(RoundedRectangle(cornerRadius:10).fill(selected ? accent.opacity(0.10):Color.white.opacity(hovering ? 0.06:0.025)))
+            .overlay(RoundedRectangle(cornerRadius:10).stroke(selected ? accent.opacity(0.55):Color.white.opacity(hovering ? 0.14:0.06)))
+            .opacity(enabled ? (configuration.isPressed ? 0.72:1):0.35)
+            .onHover {hovering=$0}
+    }
+}
+struct PanelChoices:View {
+    let labels:[String]
+    @Binding var selection:Int
+    var name:String
+    var body:some View {
+        HStack(spacing:7) {
+            ForEach(labels.indices,id:\.self) {i in
+                Button {selection=i} label:{Text(labels[i]).font(.system(size:12,weight:selection==i ? .semibold:.regular)).frame(maxWidth:.infinity,minHeight:34)}
+                    .buttonStyle(PanelOptionStyle(selected:selection==i))
+                    .accessibilityLabel("\(name)：\(labels[i])").accessibilityValue(selection==i ? "已选中":"未选中")
+            }
+        }
+    }
+}
+struct PanelSectionHeading:View {
+    let title:String
+    let detail:String
+    let icon:String
+    var body:some View {
+        HStack(spacing:11) {
+            Image(systemName:icon).font(.system(size:15,weight:.medium)).foregroundColor(accent)
+                .frame(width:34,height:34).background(accent.opacity(0.08),in:RoundedRectangle(cornerRadius:11))
+            VStack(alignment:.leading,spacing:4) {
+                Text(title).font(.system(size:14,weight:.semibold))
+                if !detail.isEmpty {Text(detail).font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)}
+            }
+            Spacer(minLength:0)
+        }
+    }
+}
+struct PanelToggleRow:View {
+    let title:String
+    var detail:String=""
+    @Binding var value:Bool
+    var body:some View {
+        Toggle(isOn:$value) {
+            VStack(alignment:.leading,spacing:5) {
+                Text(title).font(.system(size:13))
+                if !detail.isEmpty {Text(detail).font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)}
+            }.padding(.trailing,18).frame(maxWidth:.infinity,alignment:.leading)
+        }.toggleStyle(SwitchToggleStyle(tint:accent)).padding(.vertical,3)
+            .accessibilityLabel(title)
+    }
+}
+struct PanelFold<Content:View>:View {
+    let title:String
+    let summary:String
+    var icon:String="slider.horizontal.3"
+    let content:Content
+    @State private var expanded=false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    init(_ title:String,summary:String="",icon:String="slider.horizontal.3",@ViewBuilder content:()->Content) {
+        self.title=title;self.summary=summary;self.icon=icon;self.content=content()
+    }
+    var body:some View {
+        VStack(alignment:.leading,spacing:0) {
+            Button {withAnimation(reduceMotion ? nil:.easeInOut(duration:0.18)){expanded.toggle()}} label:{
+                HStack(spacing:10) {
+                    Image(systemName:icon).font(.system(size:13)).foregroundColor(accent.opacity(0.8)).frame(width:20)
+                    Text(title).font(.system(size:13,weight:.medium)).foregroundColor(.white.opacity(0.9))
+                    Spacer()
+                    if !expanded {Text(summary).font(.system(size:11)).foregroundColor(quiet).lineLimit(1)}
+                    Image(systemName:"chevron.right").font(.system(size:10,weight:.semibold)).foregroundColor(quiet).rotationEffect(.degrees(expanded ? 90:0))
+                }.padding(.vertical,7).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel(title).accessibilityValue(expanded ? "已展开":"已收起")
+            if expanded {
+                VStack(alignment:.leading,spacing:16) {content}.padding(.top,15).padding(.bottom,4)
+                    .transition(.opacity)
+            }
+        }
+    }
+}
+struct PanelFacePreview:View {
+    let cat:Bool
+    var body:some View {
+        GeometryReader {g in
+            let w=g.size.width,h=g.size.height
+            Path {p in
+                for side:CGFloat in [-1,1] {
+                    let x=w/2+side*w*0.23,y=h*0.48
+                    if cat {
+                        p.move(to:CGPoint(x:x-8,y:y));p.addQuadCurve(to:CGPoint(x:x+8,y:y),control:CGPoint(x:x,y:y-5))
+                        p.move(to:CGPoint(x:x-10,y:y-14));p.addLine(to:CGPoint(x:x-2,y:y-23));p.addLine(to:CGPoint(x:x+7,y:y-14))
+                    } else {
+                        p.move(to:CGPoint(x:x-6,y:y));p.addLine(to:CGPoint(x:x+6,y:y))
+                    }
+                }
+                p.move(to:CGPoint(x:w/2-7,y:h*0.72));p.addQuadCurve(to:CGPoint(x:w/2+7,y:h*0.72),control:CGPoint(x:w/2,y:h*0.86))
+            }.stroke(accent.opacity(0.92),style:StrokeStyle(lineWidth:cat ? 2.2:3.5,lineCap:.round,lineJoin:.round))
+        }.accessibilityHidden(true)
+    }
+}
+
+enum PanelPage:String,CaseIterable,Identifiable {
+    case work,chat,robot,connection
+    var id:String {rawValue}
+    var title:String {switch self {case .work:return "工作台";case .chat:return "对话";case .robot:return "机器人";case .connection:return "连接"}}
+    var icon:String {switch self {case .work:return "square.grid.2x2";case .chat:return "bubble.left.and.bubble.right";case .robot:return "face.smiling";case .connection:return "antenna.radiowaves.left.and.right"}}
+}
 struct PanelView:View {
     @ObservedObject var model:PanelModel
+    @ObservedObject var voice:VoiceCompanion
+    @ObservedObject var vision:LocalVision
+    @AppStorage("controlPanelPage") private var storedPage=PanelPage.work.rawValue
+    var page:PanelPage {PanelPage(rawValue:storedPage) ?? .work}
+    var live:Bool {model.available}
+    var d:Device? {model.device}
     func card<Content:View>(@ViewBuilder _ content:()->Content)->some View {
-        VStack(alignment:.leading,spacing:14,content:content).padding(20).frame(maxWidth:.infinity,alignment:.leading)
+        VStack(alignment:.leading,spacing:14,content:content).padding(18).frame(maxWidth:.infinity,alignment:.leading)
             .background(RoundedRectangle(cornerRadius:18).fill(Color.white.opacity(0.045)))
             .overlay(RoundedRectangle(cornerRadius:18).stroke(Color.white.opacity(0.07)))
     }
@@ -489,66 +632,154 @@ struct PanelView:View {
         HStack{Circle().fill(ok ? accent : Color.orange.opacity(0.9)).frame(width:6,height:6);Text(name).foregroundColor(quiet);Spacer();Text(value)}.font(.system(size:12))
     }
     var body:some View {
-        let live=model.available
-        let d=model.device
-        ScrollView { VStack(alignment:.leading,spacing:18){
-            HStack(spacing:20){
-                PetFace()
-                VStack(alignment:.leading,spacing:8){Text("微光").font(.system(size:29,weight:.medium));Text("你的工位小伙伴").font(.system(size:12)).foregroundColor(quiet)}
-                Spacer()
-                VStack(alignment:.trailing,spacing:8){HStack(spacing:6){Circle().fill(model.state?.connected() == true ? accent:Color.orange).frame(width:6,height:6);Text(model.connectionTitle).font(.system(size:12))};Text("静音运行").font(.system(size:11)).foregroundColor(quiet)}
-            }.padding(.bottom,4)
-            card {
-                HStack(alignment:.firstTextBaseline){Text("设备状态").font(.system(size:14,weight:.semibold));Spacer();Text(live ? "刚刚同步" : d == nil ? "等待设备回传" : "上次记录 · 当前不可用").font(.system(size:11)).foregroundColor(live ? accent:Color.orange)}
-                HStack(alignment:.firstTextBaseline,spacing:30){
-                    VStack(alignment:.leading,spacing:7){Text("电量").font(.system(size:11)).foregroundColor(quiet);HStack(alignment:.firstTextBaseline,spacing:5){Text(d.map{$0.battery<0 ? "—":"\($0.battery)%"} ?? "—").font(.system(size:28,weight:.light,design:.rounded));if d?.charging == 1{Image(systemName:"bolt.fill").foregroundColor(accent)}}}
-                    Spacer()
-                    VStack(alignment:.leading,spacing:7){Text("充电状态").font(.system(size:11)).foregroundColor(quiet);Text(d.map{$0.charging == 1 ? "正在充电":"未在充电"} ?? "—").font(.system(size:14))}
-                    Spacer()
-                    VStack(alignment:.leading,spacing:7){Text("机器人").font(.system(size:11)).foregroundColor(quiet);Text(d.map{$0.resting == 1 ? "正在休息":"醒着"} ?? "—").font(.system(size:14))}
-                    Spacer()
-                    VStack(alignment:.leading,spacing:7){Text("固件").font(.system(size:11)).foregroundColor(quiet);Text(d.map{"v\($0.firmware)"} ?? "—").font(.system(size:14,design:.monospaced))}
-                }.opacity(live ? 1:0.45)
-            }
-            card {
-                HStack{Text("番茄钟").font(.system(size:14,weight:.semibold));Spacer();Text(model.presenceTitle).font(.system(size:11)).foregroundColor(quiet)}
-                Text(model.focusTitle).font(.system(size:model.focusActive ? 28:17,weight:.light,design:.rounded)).monospacedDigit().foregroundColor(model.focusAvailable ? accent:quiet)
-                HStack(spacing:14){
-                    Picker("时长",selection:$model.focusMinutes){Text("15 分钟").tag(15);Text("25 分钟").tag(25);Text("45 分钟").tag(45)}.labelsHidden().pickerStyle(.segmented).frame(maxWidth:300).disabled(model.focusActive || model.focusNextAvailable || model.busy)
-                    Spacer()
+        VStack(spacing:0) {
+            header.padding(.horizontal,24).padding(.top,20).padding(.bottom,18)
+            HStack(spacing:4) {
+                ForEach(PanelPage.allCases) {item in
+                    Button {storedPage=item.rawValue} label:{
+                        HStack(spacing:7) {
+                            Image(systemName:item.icon).font(.system(size:12))
+                            Text(item.title).font(.system(size:13,weight:page == item ? .semibold:.regular))
+                            if item == .robot && !model.dirty.isEmpty {Circle().fill(Color.orange).frame(width:5,height:5)}
+                            if item == .work && !model.pending.isEmpty {Text("\(model.pending.count)").font(.system(size:10,weight:.semibold)).foregroundColor(.orange)}
+                        }.frame(maxWidth:.infinity).padding(.vertical,10)
+                            .foregroundColor(page == item ? accent:quiet)
+                            .background(RoundedRectangle(cornerRadius:10).fill(page == item ? accent.opacity(0.10):.clear))
+                    }.buttonStyle(.plain).accessibilityLabel(item.title).accessibilityValue(page == item ? "已选中":"未选中")
+                }
+            }.padding(4).background(Color.white.opacity(0.025),in:RoundedRectangle(cornerRadius:13)).padding(.horizontal,24)
+            ScrollView {
+                VStack(alignment:.leading,spacing:14) {
+                    switch page {
+                    case .work:pendingCard;card {DeskExtrasView(model:model)};focusCard;noteCard
+                    case .chat:card {VoiceCardView(voice:voice)}
+                    case .robot:card {LocalVisionCard(vision:vision,connected:model.state?.connected()==true && model.state?.bridge?.transport=="ble")};settingsCard;petCard
+                    case .connection:deviceCard;connectionCard
+                    }
+                }.frame(maxWidth:.infinity,alignment:.topLeading).padding(24).padding(.top,-6)
+            }.id(page)
+            if model.busy || !model.message.isEmpty || !model.dirty.isEmpty {footer}
+        }.frame(width:620,height:780).background(Color(red:0.055,green:0.065,blue:0.075)).foregroundColor(.white).preferredColorScheme(.dark).accentColor(accent).buttonStyle(PanelActionStyle())
+    }
+    private var header:some View {
+        HStack(spacing:14) {
+            PetFace().scaleEffect(0.55).frame(width:60,height:44)
+            VStack(alignment:.leading,spacing:5) {
+                HStack(alignment:.firstTextBaseline,spacing:8) {Text("微光").font(.system(size:24,weight:.medium));Text("控制台").font(.system(size:11)).foregroundColor(quiet)}
+                HStack(spacing:8) {
+                    Text("机器人静音").font(.system(size:11)).foregroundColor(quiet)
                     if model.focusActive {
-                        if model.focusPauseAvailable {Button(model.focusPaused ? "继续":"暂停"){model.focus(model.focusPaused ? "resume":"pause")}.disabled(model.busy)}
-                        Button("结束"){model.focus("stop")}.disabled(!model.focusAvailable || model.busy)
+                        Button {storedPage=PanelPage.work.rawValue} label:{Label(model.focusPaused ? "计时已暂停":"专注中",systemImage:"timer").font(.system(size:10)).foregroundColor(accent)}.buttonStyle(.plain)
                     }
-                    else if model.focusNextAvailable {
-                        Button("下一轮"){model.focus("next")}.disabled(model.busy)
-                        Button("结束"){model.focus("stop")}.disabled(model.busy)
+                }
+            }
+            Spacer()
+            VStack(alignment:.trailing,spacing:7) {
+                Button {storedPage=PanelPage.connection.rawValue} label:{
+                    HStack(spacing:5) {Circle().fill(model.state?.connected() == true && model.state?.bridge?.data_source == "ok" ? accent:.orange).frame(width:5,height:5);Text(model.connectionTitle).font(.system(size:11)).foregroundColor(.white.opacity(0.8))}
+                }.buttonStyle(.plain).help("查看连接状态")
+                HStack(spacing:5) {
+                    if live,let d=d,d.battery>=0 {
+                        Image(systemName:d.charging == 1 ? "battery.100.bolt":"battery.\(d.battery > 87 ? 100:d.battery > 62 ? 75:d.battery > 37 ? 50:d.battery > 12 ? 25:0)").font(.system(size:12))
+                        Text("\(d.battery)%").font(.system(size:11)).monospacedDigit()
+                        if d.charging == 1 {Text("充电中").font(.system(size:10))}
+                    } else {Text("等待设备状态").font(.system(size:10))}
+                }.foregroundColor(quiet)
+            }
+        }
+    }
+    private var footer:some View {
+        VStack(spacing:0) {
+            Rectangle().fill(Color.white.opacity(0.06)).frame(height:1)
+            HStack(spacing:12) {
+                if model.busy {ProgressView().controlSize(.small)}
+                else {Image(systemName:model.dirty.isEmpty ? (model.success ? "checkmark.circle":"exclamationmark.circle") : "circle.lefthalf.filled").foregroundColor(model.dirty.isEmpty && model.success ? accent:.orange)}
+                VStack(alignment:.leading,spacing:3) {
+                    if !model.dirty.isEmpty {Text("\(model.dirty.count) 项设置待保存").font(.system(size:12,weight:.medium))}
+                    Text(model.busy || model.dirty.isEmpty ? model.message : (model.success ? "保存后应用到机器人。":model.message))
+                        .font(.system(size:11)).foregroundColor(model.success ? quiet:.orange).lineLimit(2)
+                }
+                Spacer(minLength:4)
+                if !model.dirty.isEmpty {
+                    if page == .robot {
+                        Button("撤销"){model.discard()}.buttonStyle(.plain).font(.system(size:12)).foregroundColor(quiet).padding(.horizontal,6).disabled(model.busy)
+                        Button("保存设置"){model.save()}.buttonStyle(PanelActionStyle(prominent:true)).disabled(!live || model.busy)
+                    } else {
+                        Button("查看更改"){storedPage=PanelPage.robot.rawValue}.buttonStyle(PanelActionStyle())
                     }
-                    else {Button("开始专注"){model.focus("start")}.disabled(!model.focusAvailable || model.busy)}
+                } else if !model.busy {
+                    Button {model.message=""} label:{Image(systemName:"xmark").font(.system(size:10,weight:.medium)).frame(width:26,height:26)}
+                        .buttonStyle(.plain).foregroundColor(quiet).accessibilityLabel("收起状态提示")
                 }
-                Text(["0.44","0.45","0.46"].contains(model.device?.firmware ?? "") ? "专注到时自动休息 5 分钟，休息结束点下一轮。两段均可暂停；结束取消整个循环。机器人重启只清除当前计时。" : "静音计时，关闭控制台或短暂断连仍会继续；机器人重启后清除。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
-            }
-            card {
-                HStack{Text("今日专注").font(.system(size:14,weight:.semibold));Spacer();Text("设备记录").font(.system(size:11)).foregroundColor(quiet)}
-                Text(model.focusSummaryTitle).font(.system(size:26,weight:.light,design:.rounded)).monospacedDigit().foregroundColor(model.state?.companionFresh() == true ? accent:quiet)
-                Text(model.companion?.summary_save_error == 1 ? "记录尚未保存，设备正在重试。" : "完成一轮才计数，提前结束也保留已专注的时间。暂停与休息不计入；按 Mac 本地日期换日。").font(.system(size:11)).foregroundColor(model.companion?.summary_save_error == 1 ? .orange:quiet).fixedSize(horizontal:false,vertical:true)
-            }
-            card {
-                HStack{Text("桌面便签").font(.system(size:14,weight:.semibold));Spacer();Text(model.noteStatus).font(.system(size:11)).foregroundColor(quiet)}
-                TextField("例如：下班记得带充电器",text:Binding(get:{model.noteDraft},set:{model.editNote($0)})).textFieldStyle(.roundedBorder).disabled(model.busy)
-                HStack {
-                    Text("\(model.noteDraft.unicodeScalars.count) / 32 字 · 中文、英文、数字和常用标点").font(.system(size:11)).foregroundColor(model.noteDraft.isEmpty || PanelModel.validNote(model.noteDraft) ? quiet:.orange)
-                    Spacer()
-                    if model.note?.state=="active" {Button("收起"){model.sendNote("done")}.disabled(!model.noteAvailable || model.busy)}
-                    if model.note?.state=="done" && !model.noteDirty {Button("重新贴上"){model.sendNote("restore")}.disabled(!model.noteAvailable || model.busy)}
-                    if model.noteDirty {Button("重读便签"){model.discardNote()}.disabled(!model.noteAvailable || model.busy)}
-                    Button(model.noteConflict ? "覆盖为这条" : "贴到机器人"){model.sendNote("set")}.disabled(!model.noteAvailable || model.busy || !PanelModel.validNote(model.noteDraft))
+            }.padding(.horizontal,24).padding(.vertical,14)
+        }.background(Color(red:0.065,green:0.08,blue:0.09))
+    }
+    private var deviceCard:some View {
+        card {
+            HStack(alignment:.firstTextBaseline){Text("设备状态").font(.system(size:14,weight:.semibold));Spacer();Text(live ? "刚刚同步" : d == nil ? "等待设备回传" : "上次记录 · 当前不可用").font(.system(size:11)).foregroundColor(live ? accent:Color.orange)}
+            HStack(alignment:.firstTextBaseline,spacing:30){
+                VStack(alignment:.leading,spacing:7){Text("电量").font(.system(size:11)).foregroundColor(quiet);HStack(alignment:.firstTextBaseline,spacing:5){Text(d.map{$0.battery<0 ? "—":"\($0.battery)%"} ?? "—").font(.system(size:28,weight:.light,design:.rounded));if d?.charging == 1{Image(systemName:"bolt.fill").foregroundColor(accent)}}}
+                Spacer()
+                VStack(alignment:.leading,spacing:7){Text("充电状态").font(.system(size:11)).foregroundColor(quiet);Text(d.map{$0.charging == 1 ? "正在充电":"未在充电"} ?? "—").font(.system(size:14))}
+                Spacer()
+                VStack(alignment:.leading,spacing:7){Text("机器人").font(.system(size:11)).foregroundColor(quiet);Text(d.map{$0.resting == 1 ? "正在休息":"醒着"} ?? "—").font(.system(size:14))}
+                Spacer()
+                VStack(alignment:.leading,spacing:7){Text("固件").font(.system(size:11)).foregroundColor(quiet);Text(d.map{"v\($0.firmware)"} ?? "—").font(.system(size:14,design:.monospaced))}
+            }.opacity(live ? 1:0.45)
+        }
+    }
+    private var focusCard:some View {
+        card {
+            HStack{Text("番茄钟").font(.system(size:14,weight:.semibold));Spacer();Text(model.presenceTitle).font(.system(size:11)).foregroundColor(quiet)}
+            Text(model.focusTitle).font(.system(size:model.focusActive ? 28:17,weight:.light,design:.rounded)).monospacedDigit().foregroundColor(model.focusAvailable ? accent:quiet)
+            HStack(spacing:14){
+                Picker("时长",selection:$model.focusMinutes){Text("15 分钟").tag(15);Text("25 分钟").tag(25);Text("45 分钟").tag(45)}.labelsHidden().pickerStyle(.segmented).frame(maxWidth:300).disabled(model.focusActive || model.focusNextAvailable || model.busy)
+                Spacer()
+                if model.focusActive {
+                    if model.focusPauseAvailable {Button(model.focusPaused ? "继续":"暂停"){model.focus(model.focusPaused ? "resume":"pause")}.disabled(model.busy)}
+                    Button("结束"){model.focus("stop")}.disabled(!model.focusAvailable || model.busy)
                 }
-                if model.noteConflict,let current=model.note {Text("机器人当前\(current.state=="done" ? "已收起":"显示")：\(current.text.isEmpty ? "没有便签":current.text)").font(.system(size:12)).foregroundColor(.orange).fixedSize(horizontal:false,vertical:true)}
-                Text(model.noteMessage.isEmpty ? "一张小纸条，长按约一秒后松手划掉；任务待回应时优先显示提醒。保存后，断开 Mac 或重启机器人仍保留。" : model.noteMessage).font(.system(size:11)).foregroundColor(model.noteSuccess ? quiet:.orange).fixedSize(horizontal:false,vertical:true)
+                else if model.focusNextAvailable {
+                    Button("下一轮"){model.focus("next")}.disabled(model.busy)
+                    Button("结束"){model.focus("stop")}.disabled(model.busy)
+                }
+                else {Button("开始专注"){model.focus("start")}.buttonStyle(PanelActionStyle(prominent:true)).disabled(!model.focusAvailable || model.busy)}
             }
-            card {
-                HStack{Text("摸头与动作").font(.system(size:14,weight:.semibold));Spacer();Text(live ? "设备回传" : "等待连接").font(.system(size:11)).foregroundColor(quiet)}
+            DisclosureGroup("计时说明") {
+                Text(["0.44","0.45","0.46","0.47"].contains(model.device?.firmware ?? "") ? "专注到时自动休息 5 分钟，休息结束点下一轮。两段均可暂停；结束取消整个循环。机器人重启只清除当前计时。" : "静音计时，关闭控制台或短暂断连仍会继续；机器人重启后清除。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
+                Text("今日专注按 Mac 的本地日期累计；完成一轮才计入轮数，提前结束也累计已专注的时间，暂停和休息时间不计入。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true).padding(.top,6)
+            }.font(.system(size:11)).tint(quiet)
+            Divider().overlay(Color.white.opacity(0.07))
+            HStack {
+                Text("今日专注").font(.system(size:12)).foregroundColor(quiet)
+                Spacer()
+                Text(model.focusSummaryTitle).font(.system(size:16,weight:.medium,design:.rounded)).monospacedDigit()
+                    .foregroundColor(model.state?.companionFresh() == true ? accent:quiet)
+            }
+            if model.companion?.summary_save_error == 1 {
+                Text("专注记录尚未保存，设备正在重试。").font(.system(size:11)).foregroundColor(.orange)
+            }
+        }
+    }
+    private var noteCard:some View {
+        card {
+            HStack{Text("桌面便签").font(.system(size:14,weight:.semibold));Spacer();Text(model.noteStatus).font(.system(size:11)).foregroundColor(quiet)}
+            TextField("例如：下班记得带充电器",text:Binding(get:{model.noteDraft},set:{model.editNote($0)})).textFieldStyle(.roundedBorder).disabled(model.busy)
+            HStack {
+                Text("\(model.noteDraft.unicodeScalars.count) / 32 字 · 中文、英文、数字和常用标点").font(.system(size:11)).foregroundColor(model.noteDraft.isEmpty || PanelModel.validNote(model.noteDraft) ? quiet:.orange)
+                Spacer()
+                if model.note?.state=="active" {Button("收起"){model.sendNote("done")}.disabled(!model.noteAvailable || model.busy)}
+                if model.note?.state=="done" && !model.noteDirty {Button("重新贴上"){model.sendNote("restore")}.disabled(!model.noteAvailable || model.busy)}
+                if model.noteDirty {Button("重读便签"){model.discardNote()}.disabled(!model.noteAvailable || model.busy)}
+                Button(model.noteConflict ? "覆盖为这条" : "贴到机器人"){model.sendNote("set")}.buttonStyle(PanelActionStyle(prominent:true)).disabled(!model.noteAvailable || model.busy || !PanelModel.validNote(model.noteDraft))
+            }
+            if model.noteConflict,let current=model.note {Text("机器人当前\(current.state=="done" ? "已收起":"显示")：\(current.text.isEmpty ? "没有便签":current.text)").font(.system(size:12)).foregroundColor(.orange).fixedSize(horizontal:false,vertical:true)}
+            Text(model.noteMessage.isEmpty ? "最多32字，保存后断开 Mac 也会保留。" : model.noteMessage).font(.system(size:11)).foregroundColor(model.noteSuccess ? quiet:.orange).fixedSize(horizontal:false,vertical:true)
+        }
+    }
+    private var petCard:some View {
+        card {
+            PanelFold("摸头与动作状态",summary:PetStatus.title(d,live:live),icon:"hand.raised") {
                 Text(PetStatus.title(d,live:live)).font(.system(size:15,weight:.medium)).foregroundColor(live && d?.motion_state != "unavailable" && d?.motion_state != "sensor" ? accent:.orange)
                 Text(PetStatus.latest(d,live:live)).font(.system(size:12)).fixedSize(horizontal:false,vertical:true)
                 Text(PetStatus.detail(d,live:live)).font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
@@ -556,96 +787,261 @@ struct PanelView:View {
                     Text("摸头需持续约 0.12 秒；一直按着只触发一次，抬手约 0.4 秒才能再次触发。两次点头开始至少间隔 5 秒。\n\n触屏时让开；舵机位置、负载或回执异常时停止驱动，无法卸力时请求断电。这些是自定义固件的限制，不代表已确认硬件损坏。\n\n状态约每 2 秒回传；最近一次记录保留到下一次摸头或机器人重启。查看状态不会触发动作。")
                         .font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true).padding(.top,6)
                 }.font(.system(size:11)).tint(quiet)
+            }.font(.system(size:12)).tint(quiet)
+        }
+    }
+    private var pendingCard:some View {
+        card {
+            HStack{Text("待你回应").font(.system(size:14,weight:.semibold));Spacer();Text("\(model.pending.count) 项").font(.system(size:11)).foregroundColor(quiet)}
+            if model.pending.isEmpty {
+                Text(model.state?.pendingFresh == true ? "当前 Top 8 中没有待回应的会话" : "等待同步服务更新任务状态").font(.system(size:12)).foregroundColor(quiet)
             }
-            card {
-                HStack{Text("待你回应").font(.system(size:14,weight:.semibold));Spacer();Text("\(model.pending.count) 项").font(.system(size:11)).foregroundColor(quiet)}
-                if model.pending.isEmpty {
-                    Text(model.state?.pendingFresh == true ? "当前 Top 8 中没有待回应的会话" : "等待同步服务更新任务状态").font(.system(size:12)).foregroundColor(quiet)
-                }
-                ForEach(model.pending){task in
-                    HStack(alignment:.center,spacing:16){
-                        VStack(alignment:.leading,spacing:5){
-                            Text(task.title).font(.system(size:13,weight:.medium)).lineLimit(2)
-                            Text(task.reason).font(.system(size:11)).foregroundColor(.orange).lineLimit(2)
-                        }
-                        Spacer(minLength:0)
-                        Button(model.openingThreadID == task.id ? "正在打开…" : "在 Codex 打开"){model.openPending(task)}.disabled(model.openingThreadID != nil)
-                    }
-                }
-            }
-            card {
-                HStack{Text("日常设置").font(.system(size:14,weight:.semibold));Spacer();if !model.dirty.isEmpty{Text("尚未保存").font(.system(size:11)).foregroundColor(.orange)}}
-                Text(model.settingsHint).font(.system(size:11)).foregroundColor(model.dirty.isEmpty ? quiet : .orange)
-                HStack{Text("外观皮肤");Spacer();Picker("外观皮肤",selection:Binding(get:{model.skin},set:{model.skin=$0;model.edited("skin")})){Text("默认").tag(0);Text("猫系").tag(1)}.labelsHidden().frame(width:210)}.disabled(d?.skin == nil)
-                Text(d?.skin == nil ? "连接 v0.37 或更新固件后，可切换默认与猫系外观。" : "只改变脸的外观，任务提醒和摸头互动照常。").font(.system(size:11)).foregroundColor(quiet)
-                HStack{Text("屏幕亮度");Spacer();Picker("屏幕亮度",selection:Binding(get:{model.light},set:{model.light=$0;model.edited("light")})){ForEach(0..<4){i in Text(["柔和","标准","明亮","很亮"][i]).tag(i)}}.labelsHidden().frame(width:210)}
-                HStack{Text("空闲后休息");Spacer();Picker("空闲后休息",selection:Binding(get:{model.rest},set:{model.rest=$0;model.edited("rest")})){ForEach(0..<5){i in Text(["1 分钟","3 分钟","5 分钟","10 分钟","保持常亮"][i]).tag(i)}}.labelsHidden().frame(width:210)}
-                HStack{VStack(alignment:.leading,spacing:4){Text("摸头时轻轻点头");Text("关闭后仍会害羞，也能唤醒").font(.system(size:11)).foregroundColor(quiet)};Spacer();Toggle("摸头时轻轻点头",isOn:Binding(get:{model.pet},set:{model.pet=$0;model.edited("pet")})).labelsHidden().toggleStyle(.switch)}
-                Divider().overlay(Color.white.opacity(0.1))
-                HStack{Text("任务提醒动作").font(.system(size:12,weight:.semibold));Spacer();Text("可单独开启").font(.system(size:11)).foregroundColor(quiet)}
-                HStack{Text("待你回应时轻点头");Spacer();Toggle("待你回应时轻点头",isOn:Binding(get:{model.waitMotion},set:{model.waitMotion=$0;model.edited("wait_motion")})).labelsHidden().toggleStyle(.switch)}.disabled(d?.wait_motion == nil)
-                HStack{Text("任务完成时轻点头");Spacer();Toggle("任务完成时轻点头",isOn:Binding(get:{model.doneMotion},set:{model.doneMotion=$0;model.edited("done_motion")})).labelsHidden().toggleStyle(.switch)}.disabled(d?.done_motion == nil)
-                HStack{Text("番茄钟到时轻点头");Spacer();Toggle("番茄钟到时轻点头",isOn:Binding(get:{model.focusMotion},set:{model.focusMotion=$0;model.edited("focus_motion")})).labelsHidden().toggleStyle(.switch)}.disabled(d?.focus_motion == nil)
-                Text(d == nil ? "等待设备回传提醒设置" : d?.wait_motion == nil ? "更新到 v0.25 后可设置提醒动作" : "三项独立设置；开启后轻点头一次，触摸时避让，间隔至少 20 秒。开关本身不会触发动作。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
-                Divider().overlay(Color.white.opacity(0.1))
-                HStack{Text("陪伴设置").font(.system(size:12,weight:.semibold));Spacer();Text("只改变屏幕反应").font(.system(size:11)).foregroundColor(quiet)}
-                Group {
-                    HStack{Text("日常表情频率");Spacer();Picker("日常表情频率",selection:Binding(get:{model.daily},set:{model.daily=$0;model.edited("daily")})){Text("低调").tag(0);Text("自然").tag(1);Text("活泼").tag(2)}.labelsHidden().frame(width:210)}
-                    Text(["连续空闲约 3–5 分钟后，偶尔张望、微笑或打哈欠","连续空闲约 45–90 秒后，自然地变换小表情","连续空闲约 20–40 秒后，多一些小表情"][model.daily]).font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
-                    HStack{Text("锁屏后休息");Spacer();Toggle("锁屏后休息",isOn:Binding(get:{model.awayRest},set:{model.awayRest=$0;model.edited("away_rest")})).labelsHidden().toggleStyle(.switch)}
-                    HStack{Text("回来迎接");Spacer();Toggle("回来迎接",isOn:Binding(get:{model.greeting},set:{model.greeting=$0;model.edited("greeting")})).labelsHidden().toggleStyle(.switch)}
-                    HStack{Text("摸头后亲昵");Spacer();Toggle("摸头后亲昵",isOn:Binding(get:{model.affection},set:{model.affection=$0;model.edited("affection")})).labelsHidden().toggleStyle(.switch)}
-                }.disabled(!model.companionSettingsAvailable)
-                Text(model.companionSettingsAvailable ? "任务提醒优先。关闭亲昵后，直接摸头的表情与动作设置仍然保留。" : "连接 v0.35 或更新固件后，可调整陪伴设置。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
-                HStack{Text(live ? "更改后保存到机器人" : model.state?.bridge?.device_supported == false ? "请先更新机器人固件" : "设备状态更新后可调整").font(.system(size:11)).foregroundColor(quiet);Spacer();Button("采用机器人设置"){model.discard()}.disabled(model.dirty.isEmpty);Button("保存设置"){model.save()}.buttonStyle(.borderedProminent).tint(accent).disabled(model.dirty.isEmpty)}
-            }.disabled(!live || model.busy)
-            card {
-                HStack{Text("同步检查").font(.system(size:14,weight:.semibold));Spacer();Button(model.busy ? "正在检查…":"立即检查"){model.issue(["action":"inspect"],saving:false)}.disabled(model.busy)}
-                HStack{Text("连接异常时可在这里恢复").font(.system(size:11)).foregroundColor(quiet);Spacer();Button(model.recoveryTitle){model.recover()}.disabled(model.busy || model.state?.installed != true)}
-                diagnostic("Mac 同步服务",model.state?.paused == true ? "已暂停" : model.state?.fresh == true ? "运行中":"未就绪",model.state?.fresh == true && model.state?.paused != true)
-                diagnostic("机器人连接",model.state?.connected() == true ? model.state?.bridge?.transport == "ble" ? "蓝牙已连接":"USB 已连接":"等待连接",model.state?.connected() == true)
-                diagnostic("Codex 任务数据",model.state?.fresh == true && model.state?.bridge?.data_source == "ok" ? "可读取":"暂不可读取",model.state?.fresh == true && model.state?.bridge?.data_source == "ok")
-                diagnostic("设备状态回传",live ? "正常":"等待新状态",live)
-                if let b=model.state?.bridge,model.state?.fresh == true{Text("\(b.tasks) 项任务   ·   \(b.running) 项运行   ·   \(b.needs_input) 项待回应").font(.system(size:11)).foregroundColor(quiet)}
-                Divider().overlay(Color.white.opacity(0.1))
-                HStack(alignment:.center){
+            ForEach(model.pending){task in
+                HStack(alignment:.center,spacing:16){
                     VStack(alignment:.leading,spacing:5){
-                        Text(model.state?.paused == true ? "暂停期间不采集异常" : model.state?.fresh != true ? "等待服务恢复留档" : model.state?.bridge?.diagnostics_ok == true ? "异常自动留档已开启" : model.state?.bridge?.diagnostics_ok == false ? "异常留档暂不可写入" : "当前版本尚未回传留档状态").font(.system(size:12))
-                        Text("最多约 384 KiB · 不含聊天正文和密钥").font(.system(size:11)).foregroundColor(quiet)
+                        Text(task.title).font(.system(size:13,weight:.medium)).lineLimit(2)
+                        Text(task.reason).font(.system(size:11)).foregroundColor(.orange).lineLimit(2)
                     }
-                    Spacer()
-                    Button(model.exporting ? "正在导出…":"导出诊断"){model.exportDiagnostics()}.disabled(model.exporting || model.state?.installed != true)
+                    Spacer(minLength:0)
+                    Button(model.openingThreadID == task.id ? "正在打开…" : "在 Codex 打开"){model.openPending(task)}.disabled(model.openingThreadID != nil)
                 }
-                if !model.diagnosticMessage.isEmpty {
-                    HStack(alignment:.top){Text(model.diagnosticMessage).font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true);Spacer();if let url=model.diagnosticURL{Button("在 Finder 显示"){NSWorkspace.shared.activateFileViewerSelecting([url])}}}
-                }
-
             }
-            HStack(alignment:.top,spacing:8){if model.busy{ProgressView().controlSize(.small)};Text(model.message.isEmpty ? "机器人独立供电即可，日常设置通过蓝牙传递。" : model.message).font(.system(size:11)).foregroundColor(model.success ? quiet:Color.orange).fixedSize(horizontal:false,vertical:true);Spacer()}.frame(minHeight:28)
-        }.padding(28) }.frame(width:620,height:780).background(Color(red:0.055,green:0.065,blue:0.075)).foregroundColor(.white).preferredColorScheme(.dark)
+        }
+    }
+    private func preference(_ key:String,_ value:Binding<Int>)->Binding<Int> {
+        Binding(get:{value.wrappedValue},set:{value.wrappedValue=$0;model.edited(key)})
+    }
+    private func preference(_ key:String,_ value:Binding<Bool>)->Binding<Bool> {
+        Binding(get:{value.wrappedValue},set:{value.wrappedValue=$0;model.edited(key)})
+    }
+    private func skinChoice(_ value:Int,_ title:String,_ subtitle:String)->some View {
+        Button {model.skin=value;model.edited("skin")} label:{
+            HStack(spacing:16) {
+                PanelFacePreview(cat:value==1).frame(width:84,height:64)
+                VStack(alignment:.leading,spacing:5) {Text(title).font(.system(size:14,weight:.medium));Text(subtitle).font(.system(size:11)).foregroundColor(quiet)}
+                Spacer(minLength:0)
+                Image(systemName:model.skin==value ? "checkmark.circle.fill":"circle").font(.system(size:15)).opacity(model.skin==value ? 1:0.35)
+            }.padding(13).frame(maxWidth:.infinity)
+        }.buttonStyle(PanelOptionStyle(selected:model.skin==value))
+            .accessibilityLabel("外观皮肤：\(title)").accessibilityValue(model.skin==value ? "已选中":"未选中")
+            .disabled(d?.skin == nil)
+    }
+    private var settingsCard:some View {
+        VStack(alignment:.leading,spacing:14) {
+            HStack(spacing:6) {
+                Circle().fill(!model.dirty.isEmpty ? Color.orange:live ? accent:quiet).frame(width:5,height:5)
+                Text(model.settingsHint).font(.system(size:11)).foregroundColor(!model.dirty.isEmpty ? .orange:quiet)
+            }.padding(.horizontal,3)
+            card {
+                PanelSectionHeading(title:"它的模样",detail:"选一个喜欢的表情，保存后应用。",icon:"face.smiling")
+                HStack(spacing:10) {skinChoice(0,"默认","极简线条");skinChoice(1,"猫系","小耳朵 · 弯弯眼")}
+                Divider().overlay(Color.white.opacity(0.04))
+                HStack {Text("屏幕亮度").font(.system(size:12));Spacer();Image(systemName:"sun.max").font(.system(size:12)).foregroundColor(quiet)}
+                PanelChoices(labels:["柔和","标准","明亮","很亮"],selection:preference("light",$model.light),name:"屏幕亮度")
+                Text("这里只预览外观选择，亮度仍以机器人屏幕为准。").font(.system(size:10)).foregroundColor(quiet)
+            }
+            card {
+                PanelSectionHeading(title:"相处方式",detail:"安静陪伴，按你的节奏。",icon:"sparkle")
+                PanelToggleRow(title:"摸头时轻轻点头",detail:"关闭后仍会害羞，也能唤醒。",value:preference("pet",$model.pet))
+                Divider().overlay(Color.white.opacity(0.04))
+                PanelFold("休息与日常",summary:["1 分钟后休息","3 分钟后休息","5 分钟后休息","10 分钟后休息","保持清醒"][model.rest],icon:"moon") {
+                    Text("空闲多久后休息").font(.system(size:12))
+                    PanelChoices(labels:["1 分钟","3 分钟","5 分钟","10 分钟","不休息"],selection:preference("rest",$model.rest),name:"空闲后休息")
+                    Text("休息时闭眼，屏幕亮度保持不变。").font(.system(size:11)).foregroundColor(quiet)
+                    Group {
+                        Text("日常表情").font(.system(size:12))
+                        PanelChoices(labels:["低调","自然","活泼"],selection:preference("daily",$model.daily),name:"日常表情频率")
+                        Text(["空闲约 3–5 分钟后，偶尔变换小表情。","空闲约 45–90 秒后，自然地变换小表情。","空闲约 20–40 秒后，多一些小表情。"][model.daily]).font(.system(size:11)).foregroundColor(quiet)
+                        PanelToggleRow(title:"锁屏后休息",value:preference("away_rest",$model.awayRest))
+                        PanelToggleRow(title:"回来迎接",value:preference("greeting",$model.greeting))
+                        PanelToggleRow(title:"摸头后亲昵",detail:"关闭后，直接摸头的表情和动作仍然保留。",value:preference("affection",$model.affection))
+                    }.disabled(!model.companionSettingsAvailable)
+                    if !model.companionSettingsAvailable {Text("连接 v0.35 或更新固件后可调整日常陪伴。").font(.system(size:11)).foregroundColor(.orange)}
+                }
+                Divider().overlay(Color.white.opacity(0.04))
+                PanelFold("提醒动作",summary:"\([model.waitMotion,model.doneMotion,model.focusMotion].filter{$0}.count) 项已开启",icon:"bell") {
+                    PanelToggleRow(title:"待你回应时轻点头",value:preference("wait_motion",$model.waitMotion)).disabled(d?.wait_motion == nil)
+                    PanelToggleRow(title:"任务完成时轻点头",value:preference("done_motion",$model.doneMotion)).disabled(d?.done_motion == nil)
+                    PanelToggleRow(title:"番茄钟到时轻点头",value:preference("focus_motion",$model.focusMotion)).disabled(d?.focus_motion == nil)
+                    Text(d?.wait_motion == nil ? "连接支持提醒动作的新固件后可调整。":"开启后轻点头一次；触摸时避让，两次至少间隔 20 秒。设置开关本身不触发动作。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
+                }
+            }
+        }.disabled(!live || model.busy)
+    }
+    private var connectionCard:some View {
+        card {
+            HStack{Text("同步检查").font(.system(size:14,weight:.semibold));Spacer();Button(model.busy ? "正在检查…":"立即检查"){model.issue(["action":"inspect"],saving:false)}.disabled(model.busy)}
+            HStack{Text("连接异常时可在这里恢复").font(.system(size:11)).foregroundColor(quiet);Spacer();Button(model.recoveryTitle){model.recover()}.disabled(model.busy || model.state?.installed != true)}
+            diagnostic("Mac 同步服务",model.state?.paused == true ? "已暂停" : model.state?.fresh == true ? "运行中":"未就绪",model.state?.fresh == true && model.state?.paused != true)
+            diagnostic("机器人连接",model.state?.connected() == true ? model.state?.bridge?.transport == "ble" ? "蓝牙已连接":"USB 已连接":"等待连接",model.state?.connected() == true)
+            diagnostic("Codex 任务数据",model.state?.fresh == true && model.state?.bridge?.data_source == "ok" ? "可读取":"暂不可读取",model.state?.fresh == true && model.state?.bridge?.data_source == "ok")
+            diagnostic("设备状态回传",live ? "正常":"等待新状态",live)
+            if let b=model.state?.bridge,model.state?.fresh == true{Text("\(b.tasks) 项任务   ·   \(b.running) 项运行   ·   \(b.needs_input) 项待回应").font(.system(size:11)).foregroundColor(quiet)}
+            Divider().overlay(Color.white.opacity(0.1))
+            HStack(alignment:.center){
+                VStack(alignment:.leading,spacing:5){
+                    Text(model.state?.paused == true ? "暂停期间不采集异常" : model.state?.fresh != true ? "等待服务恢复留档" : model.state?.bridge?.diagnostics_ok == true ? "异常自动留档已开启" : model.state?.bridge?.diagnostics_ok == false ? "异常留档暂不可写入" : "当前版本尚未回传留档状态").font(.system(size:12))
+                    Text("最多约 384 KiB · 不含聊天正文和密钥").font(.system(size:11)).foregroundColor(quiet)
+                }
+                Spacer()
+                Button(model.exporting ? "正在导出…":"导出诊断"){model.exportDiagnostics()}.disabled(model.exporting || model.state?.installed != true)
+            }
+            if !model.diagnosticMessage.isEmpty {
+                HStack(alignment:.top){Text(model.diagnosticMessage).font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true);Spacer();if let url=model.diagnosticURL{Button("在 Finder 显示"){NSWorkspace.shared.activateFileViewerSelecting([url])}}}
+            }
+
+        }
     }
 }
 
-final class AppDelegate:NSObject,NSApplicationDelegate {
+final class VoiceFloatingPanel:NSPanel {
+    override var canBecomeKey:Bool {true}
+    override var canBecomeMain:Bool {false}
+    override func cancelOperation(_ sender:Any?) {performClose(sender)}
+}
+
+final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
     var window:NSWindow?
+    var voicePanel:VoiceFloatingPanel?
+    var statusItem:NSStatusItem?
+    var hotkey:VoiceHotkey?
     let model=PanelModel()
+    let voice=VoiceCompanion()
+    let vision=LocalVision()
     func applicationDidFinishLaunching(_ notification:Notification){
-        let view=PanelView(model:model)
+        model.onTaskSnapshot = { [weak voice] snapshot in voice?.acceptTaskSnapshot(snapshot) }
+        voice.onLocalCommand = { [weak model] command,completion in
+            guard let model=model else {completion(VoiceCommandOutcome(ok:false,message:"控制台暂不可用。"));return}
+            model.executeVoiceCommand(command,completion:completion)
+        }
+        voice.onHotkeyChanged = { [weak self] in self?.configureHotkey() }
+        voice.onPresentVoiceMode = { [weak self] in self?.openVoicePanel() }
+        let view=PanelView(model:model,voice:voice,vision:vision)
         let hosting=NSHostingView(rootView:view)
         let window=NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:780),styleMask:[.titled,.closable,.miniaturizable],backing:.buffered,defer:false)
         if let url=Bundle.main.url(forResource:"Weiguang",withExtension:"icns"),let icon=NSImage(contentsOf:url){NSApp.applicationIconImage=icon}
         window.title="微光控制台";window.titlebarAppearsTransparent=true;window.backgroundColor=NSColor(calibratedRed:0.055,green:0.065,blue:0.075,alpha:1);window.contentView=hosting;window.center();window.setFrameAutosaveName("WeiguangPanel");self.window=window
-        window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true);model.start()
+        window.delegate=self;window.isReleasedWhenClosed=false
+        installMenus();configureHotkey()
+        window.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true);model.start();voice.start()
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool{true}
+    func configureHotkey() {
+        hotkey?.unregister();hotkey=nil
+        guard voice.hotkeyEnabled else {voice.hotkeyStatus="快捷键已关闭；可从菜单栏打开语音。";return}
+        let key=VoiceHotkey { [weak self] in self?.toggleVoice() }
+        hotkey=key
+        voice.hotkeyStatus=key.register() ? "⌃⌥空格 · 呼出或关闭语音浮窗" : "⌃⌥空格注册失败，可能已被占用；可用菜单栏入口。"
+    }
+    func installMenus() {
+        let main=NSMenu(),root=NSMenuItem();main.addItem(root)
+        let application=NSMenu();root.submenu=application
+        let voiceEntry=NSMenuItem(title:"开始／结束语音",action:#selector(toggleVoice),keyEquivalent:"");voiceEntry.target=self;application.addItem(voiceEntry)
+        application.addItem(.separator())
+        let quit=NSMenuItem(title:"退出微光",action:#selector(quitApp),keyEquivalent:"q");quit.target=self;application.addItem(quit)
+        let editRoot=NSMenuItem(title:"编辑",action:nil,keyEquivalent:"");main.addItem(editRoot)
+        let edit=NSMenu(title:"编辑");editRoot.submenu=edit
+        for (title,action,key) in [("撤销","undo:","z"),("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {
+            edit.addItem(NSMenuItem(title:title,action:NSSelectorFromString(action),keyEquivalent:key))
+        }
+        NSApp.mainMenu=main
+        let item=NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength)
+        item.button?.image=NSImage(systemSymbolName:"waveform",accessibilityDescription:"微光")
+        item.button?.image?.isTemplate=true;item.button?.toolTip="微光 · ⌃⌥空格开始或结束语音"
+        let menu=NSMenu()
+        for (title,selector) in [("打开微光控制台",#selector(showPanel)),("开始／结束语音",#selector(toggleVoice))] {
+            let entry=NSMenuItem(title:title,action:selector,keyEquivalent:"");entry.target=self;menu.addItem(entry)
+        }
+        menu.addItem(.separator())
+        let exit=NSMenuItem(title:"退出微光",action:#selector(quitApp),keyEquivalent:"");exit.target=self;menu.addItem(exit)
+        item.menu=menu;statusItem=item
+    }
+    @objc func showPanel(){window?.deminiaturize(nil);window?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
+    func openVoicePanel() {
+        if voicePanel == nil {
+            let panel=VoiceFloatingPanel(contentRect:NSRect(x:0,y:0,width:400,height:520),
+                styleMask:[.titled,.closable,.nonactivatingPanel],backing:.buffered,defer:false)
+            panel.title="微光语音";panel.titleVisibility = .hidden;panel.titlebarAppearsTransparent=true
+            panel.backgroundColor=NSColor(calibratedRed:0.04,green:0.055,blue:0.065,alpha:1)
+            panel.isReleasedWhenClosed=false;panel.delegate=self
+            panel.level = .floating;panel.hidesOnDeactivate=false;panel.isFloatingPanel=true
+            panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
+            panel.becomesKeyOnlyIfNeeded=false;panel.isMovableByWindowBackground=true;panel.worksWhenModal=true
+            panel.contentView=NSHostingView(rootView:VoiceModeView(voice:voice,compact:true,onEnd:{[weak self] in self?.closeVoicePanel()}))
+            panel.setFrameAutosaveName("WeiguangVoicePanel")
+            if !panel.setFrameUsingName("WeiguangVoicePanel"),let screen=NSScreen.screens.first(where:{$0.frame.contains(NSEvent.mouseLocation)}) ?? NSScreen.main {
+                let frame=screen.visibleFrame
+                panel.setFrameTopLeftPoint(NSPoint(x:frame.maxX-panel.frame.width-24,y:frame.maxY-48))
+            }
+            voicePanel=panel
+        }
+        // 先让独立窗口可见，再沿用现有耳机／权限保护进入语音；不把控制台一起带出。
+        window?.orderOut(nil)
+        voicePanel?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps:true)
+        if !voice.voiceMode.visible {voice.startVoiceMode()}
+    }
+    func closeVoicePanel() {
+        voice.exitVoiceMode()
+        voicePanel?.orderOut(nil)
+    }
+    @objc func toggleVoice() {
+        if voicePanel?.isVisible == true || voice.voiceMode.visible {closeVoicePanel()}
+        else {openVoicePanel()}
+    }
+    @objc func quitApp(){NSApp.terminate(nil)}
+    func windowShouldClose(_ sender:NSWindow)->Bool {
+        if sender === voicePanel {closeVoicePanel();return false}
+        closeVoicePanel();voice.cancel("控制台已收起，麦克风已关闭；可从菜单栏或快捷键再次打开。")
+        vision.stop("控制台已收起，视觉互动已关闭。");sender.orderOut(nil);return false
+    }
+    func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool{showPanel();return true}
+    func applicationWillTerminate(_ notification:Notification){hotkey?.unregister();voice.stop();vision.stop()}
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender:NSApplication)->Bool{false}
 }
 @main struct Main {
     static func main(){
+        if CommandLine.arguments.contains("--music-output") {print(HeadphoneHardware.current().isAirPods ? "airpods":"protected");return}
+        if CommandLine.arguments.contains("--music-control") {musicControl();return}
+        if CommandLine.arguments.contains("--vision-analyze") {localVisionAnalyzer();return}
+        if CommandLine.arguments.contains("--voice-inspect") {
+            let r=HeadphoneHardware.current()
+            let result:[String:Any]=["is_airpods":r.isAirPods,"name":r.name,"manufacturer":r.manufacturer,"bluetooth":r.bluetooth,"alive":r.alive,"output_channels":r.outputChannels]
+            print(String(data:try! JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!);return
+        }
+        if CommandLine.arguments.contains("--voice-self-test") {voiceGateSelfTest();voiceSettingsSelfTest();voiceGreetingSelfTest();voiceTaskNoticeSelfTest();voiceConversationSelfTest();voiceFaceSelfTest();voiceMicrophoneSelfTest();voiceModeSelfTest();voiceCommandsSelfTest();voiceHotkeySelfTest();print("voice gate, render, settings, greeting and conversation tests passed");return}
+        if CommandLine.arguments.contains("--voice-demo") || CommandLine.arguments.contains("--voice-silence-test") || CommandLine.arguments.contains("--voice-cancel-test") {
+            let voice=VoiceCompanion(persist:false);voice.start();voice.adoptCurrent();voice.setEnabled(true)
+            let cancelTest=CommandLine.arguments.contains("--voice-cancel-test")
+            voice.request(demo:true,silenceOnly:!CommandLine.arguments.contains("--voice-demo"))
+            if cancelTest {
+                let until=Date().addingTimeInterval(0.2)
+                while Date()<until {RunLoop.current.run(until:Date().addingTimeInterval(0.02))}
+                voice.setEnabled(false);voice.setEnabled(true)
+                voice.lastCancellationCheck()
+            }
+            let until=Date().addingTimeInterval(95)
+            while voice.busy && Date()<until {RunLoop.current.run(until:Date().addingTimeInterval(0.05))}
+            var result=voice.lastResult;result["message"]=voice.message
+            result["route_is_airpods"]=voice.route.isAirPods;result["watcher_healthy"]=voice.watcher?.healthy ?? false
+            result["listener_errors"]=voice.watcher?.registrationErrors ?? [:]
+            result["listener_count"]=voice.watcher?.registrations.count ?? 0
+            voice.stop();print(String(data:try! JSONSerialization.data(withJSONObject:result,options:[.sortedKeys]),encoding:.utf8)!);return
+        }
         if CommandLine.arguments.contains("--self-test") {
             let d=Device(firmware:"0.25",page:"home",battery:100,charging:0,resting:0,brightness:70,light:1,rest:1,pet:1,save_error:0,uptime:1,sync_age:1)
             let b=BridgeState(connection:"connected",data_source:"ok",transport:"ble",tasks:8,running:1,needs_input:0,device_at:Date().timeIntervalSince1970,device_supported:true,device:d)
             var s=PanelState(installed:true,paused:false,loaded:true,fresh:true,bridge:b)
             precondition(s.deviceFresh());s.paused=true;precondition(!s.deviceFresh());s.paused=false;s.fresh=false;precondition(!s.deviceFresh());s.fresh=true;s.bridge?.device_at=Date().timeIntervalSince1970-30;precondition(!s.deviceFresh());s.bridge?.device_at=Date().timeIntervalSince1970+30;precondition(!s.deviceFresh())
+            // Python status JSON -> 面板 -> 语音观察器；缺字段的旧桥接保持兼容且不播报。
+            precondition(s.taskVoiceSnapshot == nil)
+            let noticeJSON=Data("{\"installed\":true,\"paused\":false,\"fresh\":true,\"bridge\":{\"connection\":\"waiting_ble\",\"data_source\":\"ok\",\"tasks\":1,\"running\":0,\"needs_input\":0,\"pid\":123,\"last_good_at\":100,\"completion_events\":[{\"id\":\"00000000-0000-4000-8000-000000000001\",\"title\":\"测试任务\",\"key\":\"aaaaaaaaaaaaaaaa\",\"completed_at\":99}]}}".utf8)
+            var noticeState=try! JSONDecoder().decode(PanelState.self,from:noticeJSON)
+            let noticeModel=PanelModel();var receivedSnapshot:VoiceTaskSnapshot?
+            noticeModel.onTaskSnapshot={receivedSnapshot=$0};noticeModel.accept(noticeState)
+            precondition(receivedSnapshot?.events.first?.title=="测试任务" && receivedSnapshot?.pid==123)
+            noticeState.paused=true;noticeModel.accept(noticeState);precondition(receivedSnapshot == nil)
+            noticeState.paused=false;noticeState.bridge?.data_source="unavailable"
+            noticeModel.accept(noticeState);precondition(receivedSnapshot == nil)
             let model=PanelModel();var device=d;device.wait_motion=1;device.done_motion=0
             model.acceptDevice(device);precondition(model.waitMotion && !model.doneMotion)
             model.waitMotion=false;model.edited("wait_motion");model.acceptDevice(device);precondition(!model.waitMotion)
@@ -676,8 +1072,8 @@ final class AppDelegate:NSObject,NSApplicationDelegate {
             linked.light=2;linked.edited("light");linked.discard();precondition(linked.light==0 && linked.dirty.isEmpty)
             linked.light=2;linked.edited("light");robot.light=2;robot.save_error=1
             linked.acceptDevice(robot);precondition(linked.dirty.contains("light")) // 保存失败不能丢失可重试草稿。
-            let task=PendingTask(id:"00000000-0000-0000-0046-000000000001",title:"提问",reason:"待答：提醒方式")
-            precondition(task.codexURL?.absoluteString == "codex://threads/00000000-0000-0000-0046-000000000001?hostId=local")
+            let task=PendingTask(id:"00000000-0000-4000-8000-000000000001",title:"提问",reason:"待答：提醒方式")
+            precondition(task.codexURL?.absoluteString == "codex://threads/00000000-0000-4000-8000-000000000001?hostId=local")
             precondition(PendingTask(id:"https://example.com",title:"",reason:"").codexURL == nil)
             linked.state?.bridge?.pending_tasks=[task];linked.state?.fresh=true;linked.state?.paused=false
             linked.state?.bridge?.data_source="ok";linked.state?.bridge?.connection="waiting_ble"

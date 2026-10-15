@@ -17,7 +17,7 @@ from runtime import atomic_json, select_port
 
 LABEL = 'io.github.prozaclaputa.weiguang'
 WHEEL_HASH = 'c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0'
-APP_FILES = ('monitor.py', 'expression.py', 'waiting_reason.py', 'completion_summary.py', 'task_progress.py', 'task_actions.py', 'diagnostics.py', 'runtime.py', 'presence.py', 'service.py', 'requirements.txt', 'ble_link.py', 'control.py', 'recovery.py')
+APP_FILES = ('desk_extras.py', 'monitor.py', 'expression.py', 'waiting_reason.py', 'completion_summary.py', 'task_progress.py', 'task_actions.py', 'diagnostics.py', 'runtime.py', 'presence.py', 'service.py', 'requirements.txt', 'ble_link.py', 'control.py', 'recovery.py')
 PROJECT = Path(__file__).resolve().parent.parent
 
 
@@ -328,10 +328,13 @@ def export_package(destination, include_backup=False):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         raise RuntimeError('导出目标已存在，请换一个文件名。')
-    paths = [PROJECT/'weiguang', PROJECT/'DAILY_USE.md', PROJECT/'MIGRATION.md']
+    paths = [PROJECT/'weiguang', PROJECT/'DAILY_USE.md', PROJECT/'MIGRATION.md', PROJECT/'VISUAL_INTERACTION.md']
     paths += [PROJECT/'bridge'/name for name in APP_FILES]
     paths += list((PROJECT/'controls').glob('*.command'))
-    paths += [PROJECT/'macos'/name for name in ('WeiguangBluetooth','Info.plist','WeiguangBluetooth.swift','build.py','WeiguangPanel','PanelInfo.plist','WeiguangPanel.swift','build_panel.py','Weiguang.icns','Weiguang.png','draw_icon.swift','build_icon.py')]
+    # 仅源码与说明；语音身份、获准耳机UID和本机路径均不进入迁移包。
+    paths += [PROJECT/'macos/setup_voice.py',PROJECT/'bridge/voice-requirements.txt',PROJECT/'bridge/factory_voice_client.py',PROJECT/'bridge/voice_commands.py',PROJECT/'bridge/vision_camera.py',PROJECT/'HEADPHONES_VOICE_SETUP.md']
+    paths += [PROJECT/'checks'/name for name in ('factory_voice_identity.py','factory_voice_probe.py')]
+    paths += [PROJECT/'macos'/name for name in ('WeiguangBluetooth','Info.plist','WeiguangBluetooth.swift','build.py','WeiguangPanel','PanelInfo.plist','WeiguangPanel.swift','AirPodsAudio.swift','VoiceCompanion.swift','VoiceViews.swift','VoiceGreeting.swift','VoiceConversation.swift','VoiceFace.swift','VoiceMicrophone.swift','VoiceMode.swift','VoiceTaskNotice.swift','VoiceCommands.swift','VoiceHotkey.swift','LocalVision.swift','DeskExtras.swift','build_panel.py','Weiguang.icns','Weiguang.png','draw_icon.swift','build_icon.py')]
     # 新电脑通过 USB 重新绑定；不导出当前机器的 ble.key 或蓝牙权限。
     paths += [PROJECT/'bridge/wheels/pyserial-3.5-py2.py3-none-any.whl',
               PROJECT/'bridge/wheels/pyserial-3.5-LICENSE.txt']

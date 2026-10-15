@@ -2,39 +2,43 @@
 
 ## 组成
 
-- `src/`：设备 UI、手势、任务与连接状态、表情、限幅动作、计时和便签。
-- `bridge/`：只读 Codex 状态、USB／BLE 调度、本地控制 socket、登录服务和诊断。
-- `macos/`：SwiftUI 控制台、CoreBluetooth helper、图标源文件和本地构建脚本。
-- `lib/`：按范围保留并带许可证的硬件驱动。
-- `tests/`、`bridge/test_*.py`：使用假设备／隔离文件的宿主测试。
+- `src/`：固件 UI、手势、任务、连接、表情、限幅动作、计时、便签和可选摄像头。
+- `bridge/`：只读 Codex 状态、USB／BLE 调度、工作接力、音乐元数据、本地控制及可选语音／视觉 worker。
+- `macos/`：SwiftUI 控制台、AirPods 输出与输入保护、连续语音、Apple Vision、蓝牙 helper 和构建脚本。
+- `checks/factory_voice_identity.py`、`factory_voice_probe.py`：可选原厂语音所需的本机身份解析和受限协议实现，不含实际凭据。
+- `tests/`、`bridge/test_*.py`、`checks/test_*.py`：隔离文件、假设备和生成音频的宿主检查。
 
-固件依赖固定为 espressif32 6.12.0、M5GFX 0.2.31、M5Unified 0.2.25；使用标准注册表下载，不依赖开发者本地 vendor 目录。Python 运行依赖只有 pyserial 3.5，离线 wheel 在安装前验证哈希。
+固件固定 espressif32 6.12.0、Arduino-ESP32 2.0.17、M5GFX 0.2.31、M5Unified 0.2.25，使用公共注册表，不依赖本机 vendor。基础 Python 运行依赖 pyserial 3.5，离线 wheel 校验哈希；语音依赖单列在 voice-requirements.txt。
 
-## 测试
+## 运行检查
 
-完成 README 的 Python 依赖安装后：
+完成 README 的依赖安装和固件构建后：
 
 ```sh
-.venv/bin/pio run
 .venv/bin/python checks/run_tests.py
-# 在本机完成原生构建后
 macos/WeiguangPanel --self-test
-# 只生成示例数据渲染预览
+macos/WeiguangPanel --voice-self-test
+# 可选语音离线检查：需 ffmpeg、libopus 和 Python 语音依赖
+.venv/bin/python checks/run_voice_tests.py
+# 示例时间渲染，不是实机截图
 python3 checks/render_preview.py
 ```
 
-触摸流水线检查直接引用固定版本 M5Unified 的实际实现，因此先执行固件构建下载依赖。测试运行需要本机临时 Unix socket 和伪终端权限，不连接真实机器人、不读取真实聊天。C++ 检查启用 AddressSanitizer / UndefinedBehaviorSanitizer。
+基础检查需要临时 Unix socket、伪终端；C++ 开启 ASan/UBSan。触摸检查直接引用已下载的 M5Unified 实现。语音夹具由 ffmpeg 生成一秒正弦信号；测试不读取原厂身份、不连网络、不播放或录音。上述检查不运行真实机器人操作。
 
-## 候选状态
+## 2026-10-15 公开副本验证
 
-开发版本已通过 122 项 Python 测试、27 组 C++ 检查、固件编译和 Swift 双架构开发构建。公开副本已单独通过 122 项 Python 测试、27 组 C++ ASan/UBSan 检查，以及 Swift 两个组件的 arm64／x86_64 类型检查。触摸测试使用从官方注册表新获取的 M5Unified 0.2.25。没有构建或签名发行 App。
+- 140 项桥接 Python 测试通过。
+- 31 组 C++ ASan/UBSan 检查通过。
+- 55 项可选语音、视觉和备份校验 Python 测试通过。
+- 使用公开固定依赖的完整固件构建通过。
+- Swift 控制台和蓝牙 helper 的 arm64/x86_64 开发构建通过；控制台及完整语音静音自检通过。
+- 修复公开测试的 libopus 查找和生成音频夹具路径；用使用者自己的 factory.sha256 替代开发设备固定摘要，缺失／错误摘要拒绝。
 
-公开副本已使用官方注册表平台／编译器、官方固定版本 SDK、M5GFX 0.2.31 和 M5Unified 0.2.25 完成完整固件构建。SDK 主镜像下载慢，改用注册表返回的备用镜像并校验官方 SHA-256 后成功。构建不依赖私人 vendor 缓存。
+开发二进制／固件仅作本地验证，未上传 Release，也未替换开发者当前安装或刷写设备。公开副本使用 `io.github.prozaclaputa.weiguang` 应用标识，与历史私有开发安装不同。
 
-实机运行的是同一 v0.46 固件源码的开发环境构建，公开环境构建另作编译验证。设备显示、Mac 便签收发与重启保留已检查；手指长按手感、Mac 自然登录、全天稳定性和原厂完整恢复不列为已验收。没有可下载的签名、公证 Mac 发行包。
+## 实机证据与未验收项
 
+开发设备已验证任务显示、USB／BLE、触摸、猫系互动、番茄钟、便签、AirPods 对话与流式回复。QQ 音乐显示和暂停／播放获使用者确认。语音音色“湾湾小何v2”是开发设备绑定角色的人工听感确认，不是自动查询到的通用 voice_id。
 
-2026-10-13 长按交互修正：主屏与番茄钟待回应区改为持续按住约 0.9 秒即发送请求。源固件／公开固件重新编译成功，27 组 C++ 回归通过，公开副本另行运行两组受影响检查。开发设备已刷入，使用者确认无需松手即可打开；便签长按收起的人工手感仍待体验。
-
-
-同日便签外观更新为暖黄色纸张、深棕字、纸纹和折角。仅修改绘制，源／公开副本重新编译成功，开发设备刷入与真实帧缓冲视觉检查通过；既有交互测试结论沿用上一轮，不声称这次重跑所有测试。
+工作接力自然锁屏返回、网易云真实播放、所有挥手姿态、Mac 自然重启登录、全天稳定性、断电恢复与完整原厂回刷不列为已完成验收。单台开发设备经验不保证其他固件、网络或账号可用。原厂语音价格／额度未知，字幕核对不是独立音频转写验证。

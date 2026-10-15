@@ -7,8 +7,9 @@
 <key>CFBundleExecutable</key><string>WeiguangPanel</string>
 <key>CFBundleIconFile</key><string>Weiguang</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.46</string>
-<key>CFBundleVersion</key><string>46</string>
+<key>CFBundleShortVersionString</key><string>0.47</string>
+<key>CFBundleVersion</key><string>47</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
+<key>NSMicrophoneUsageDescription</key><string>仅在你主动进入语音模式（或按住说话）时使用已确认的 AirPods 麦克风，分句后发送给原厂语音服务；暂停、退出、耳机断开或锁屏即关闭，不会自动开始。</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

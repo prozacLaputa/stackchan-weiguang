@@ -3,6 +3,20 @@
 #include <iostream>
 FakeServo fake;TestSerial Serial;
 int main(){
+ // 模拟真实舵机：写入目标不会瞬移。主循环停顿后，反馈应与已经发出的旧目标比较。
+ fake=FakeServo();fake.deferWrites=true;QuietMotion delayed;delayed.begin();
+ assert(delayed.requestPet(100));
+ for(uint32_t t:{140u,180u,220u,620u,660u,700u,940u,1060u,1100u,1140u,1580u,1900u,2020u}){
+  fake.pos=fake.targets.back(); // 前一条指令已走完，新指令仍需要时间。
+  delayed.tick(t,false,false);
+  assert(delayed.ready); // 不得拿刚发出的未来目标判断跟随故障。
+ }
+ assert(!delayed.active()&&fake.pos==659&&fake.torque==0);
+ // 真的没有跟上已发出的目标，仍须停止并锁定，不能被新的目标掩盖。
+ fake=FakeServo();fake.deferWrites=true;QuietMotion blocked;blocked.begin();
+ assert(blocked.requestPet(100));blocked.tick(500,false,false);
+ assert(blocked.ready);blocked.tick(620,false,false);
+ assert(!blocked.ready&&!blocked.active()&&fake.torque==0);
  // 番茄钟到时有独立开关；不借用或打开任务提醒，不排队重放。
  fake=FakeServo();QuietMotion focus;focus.begin();focus.configure(true,false,false,true);
  assert(!focus.request(NoticeKind::done,10)&&!focus.request(NoticeKind::waiting,10));

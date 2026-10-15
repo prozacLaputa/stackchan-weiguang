@@ -6,6 +6,7 @@
 #include "touch_gesture.h"
 #include "quiet_motion.h"
 #include "face_expression.h"
+#include "voice_face.h"
 #include "standby_state.h"
 #include "sync_state.h"
 #include "ble_transport.h"
@@ -23,6 +24,14 @@
 #include "focus_waiting.h"
 #include "focus_summary.h"
 #include "sticky_note.h"
+#include "local_camera.h"
+#include "visual_face.h"
+#include "desk_extras.h"
+DeskExtras desk;
+int pressedExtraPage=0,pressedExtraEntry=0,pressedExtraButton=0;
+bool extraHoldFired=false;std::string extraPressTarget,extraPressKey;uint32_t extraPressToken=0;
+LocalCamera localCamera;
+VisualFace visualFace;
 
 UiState ui;
 SyncState syncState;
@@ -41,6 +50,7 @@ bool settingsOpen=false,settingsDirty=false,settingsSaveFailed=false,pressedInSe
 SettingHit pressedSetting=SettingHit::none;
 uint32_t settingsChangedAt=0;
 FaceAnimator faceAnimator;
+VoiceFace voiceFace;
 CatPetting cat;
 DailyAnimator daily;
 RestRitual restRitual;
@@ -128,11 +138,25 @@ void backButton(bool pressed=false,bool compact=false){
  int x=compact?27:45;canvas.drawLine(x,40,x-6,46,ink);canvas.drawLine(x-6,46,x,52,ink);text("返回",x+12,38,ink);
 }
 bool dailyEligible(uint32_t now){
- if(restRitual.active(now))return false;
+ if(restRitual.active(now)||voiceFace.active(now))return false;
  if(companion.welcome(now)||companion.focus.finished(now))return false;
  if(ui.details||settingsOpen||focusOpen||standby.resting()||gesture.active||M5.Touch.getCount()>0||cat.content(now)||headRaw>0||motion.active()||ui.celebrating||(pet&&uint32_t(now-lastPet)<2600))return false;
  if(syncState.live())for(const auto& t:ui.tasks)if(t.state=="needs_input")return false;
  return true;
+}
+bool visualEligible(uint32_t now){
+ return !ui.details&&!settingsOpen&&!focusOpen&&!standby.resting()&&!gesture.active&&M5.Touch.getCount()==0&&headRaw<=0&&!motion.active()&&!ui.celebrating&&!(pet&&uint32_t(now-lastPet)<2600)&&!cat.content(now)&&!voiceFace.active(now)&&!restRitual.active(now);
+}
+const char* visualFeedback(uint32_t now){
+ if(!visualFace.active(now))return "clear";
+ if(ui.details||settingsOpen||focusOpen)return "page";
+ if(standby.resting())return "rest";
+ if(gesture.active||M5.Touch.getCount()>0||headRaw>0||motion.active()||(pet&&uint32_t(now-lastPet)<2600)||cat.content(now))return "touch";
+ if(voiceFace.active(now))return "voice";
+ if(ui.celebrating||companion.welcome(now)||companion.focus.finished(now)||restRitual.active(now))return "animation";
+ if(syncState.live()&&!ui.tasks.empty()&&ui.tasks[ui.currentIndex].state=="needs_input")return "task";
+ // 只读取已经显示的状态；回执不能抢先启动微笑的显示计时。
+ return visualFace.showing(now)?"smiling":visualFace.pending?"queued":"tracking";
 }
 DailyContext dailyContext(uint32_t now){
  if(companion.focus.working())return DailyContext::working;
@@ -152,7 +176,7 @@ bool saveSettings(){
  Preferences prefs;bool ok=prefs.begin("weiguang_ui",false);
  if(ok){ok=prefs.putUInt("prefs",settings.packed())==4;prefs.end();}
  settingsDirty=false;settingsSaveFailed=!ok;fullRedraw=true;
- Serial.printf("SETTINGS\tsaved=%d\n",ok);return ok;
+ if(!localCamera.active())Serial.printf("SETTINGS\tsaved=%d\n",ok);return ok;
 }
 void settingsChanged(){settingsDirty=true;settingsSaveFailed=false;settingsChangedAt=millis();applySettings();}
 void inspectSettings(){Serial.printf("SETTINGS\tlight=%d\trest=%d\tpet=%d\twait_motion=%d\tdone_motion=%d\tdirty=%d\tsave_error=%d\n",settings.light,settings.rest,settings.petMotion,settings.waitMotion,settings.doneMotion,settingsDirty,settingsSaveFailed);}
@@ -215,7 +239,7 @@ ListLayout listLayout(){return {canvas.width(),canvas.height()};}
 void statusBar(){
  int w=canvas.width();char stamp[6]="--:--";
  if(clockReady)snprintf(stamp,sizeof(stamp),"%02u:%02u",(unsigned)(clockSeconds/3600),(unsigned)(clockSeconds/60%60));
- text(stamp,12,7,MUTED);String link=syncState.title();canvas.setFont(&fonts::efontCN_16);text(link,(w-canvas.textWidth(link))/2,7,syncState.live()?ACCENT:MUTED);
+ text(stamp,12,7,MUTED);if(localCamera.active())canvas.fillCircle(66,14,3,ACCENT);String link=syncState.title();canvas.setFont(&fonts::efontCN_16);text(link,(w-canvas.textWidth(link))/2,7,syncState.live()?ACCENT:MUTED);
  String power=battery>=0?String(battery)+"%":"--%";canvas.setFont(&fonts::efontCN_16);int x=w-12-canvas.textWidth(power);
  text(power,x,7,battery>=0&&battery<=20?0xFD20:MUTED);
  int bx=x-24;canvas.drawRoundRect(bx,10,18,10,2,MUTED);canvas.fillRect(bx+18,13,2,4,MUTED);
@@ -235,6 +259,7 @@ FaceMood selectedFace(uint32_t now){
  auto base=selectFace(syncState.live(),shy,waiting,ui.celebrating,ui.tasks.empty()?"idle":ui.tasks[ui.currentIndex].mood);
  if(shy||(syncState.live()&&(waiting||ui.celebrating)))return base;
  if(companion.welcome(now)||companion.focus.finished(now))return FaceMood::joy;
+ if(visualEligible(now)&&visualFace.smile(now))return FaceMood::content;
  if(base==FaceMood::idle&&daily.kind==DailyKind::none&&dailyContext(now)==DailyContext::affectionate&&cat.softBlink(now))return FaceMood::content;
  if(base==FaceMood::idle&&companion.focus.working())return FaceMood::focus;
  return base;
@@ -243,11 +268,25 @@ void drawFace(uint32_t now){
  int w=canvas.width(),h=canvas.height();int faceBottom=h-74;
  int cx=w/2,cy=(32+faceBottom)/2;
  // 保持已认可的无瞳孔五官、宽眼距和小微笑；用相同轮廓平滑变化。
- auto animation=daily.frame(faceAnimator.update(selectedFace(now),now),now);
+ auto mood=selectedFace(now);
+ auto animation=daily.frame(faceAnimator.update(mood,now),now);
  FacePose p=restRitual.frame(animation.pose,now);cx+=int(lroundf(animation.x));cy+=int(lroundf(animation.y));
+ p=voiceFace.frame(p,now,!(pet&&uint32_t(now-lastPet)<2600)&&headRaw<=0&&!cat.content(now));
+ if(visualEligible(now)&&visualFace.active(now)){
+  visualFace.animate(now);cx+=int(lroundf(visualFace.x));cy+=int(lroundf(visualFace.y));
+  if(mood==FaceMood::content&&visualFace.showing(now)){
+   p=visualFace.response(p,now);cx+=int(lroundf(visualFace.waveOffset(now)));
+   float emphasis=visualFace.emphasis(now);
+   uint16_t ink=canvas.color565(int(100*emphasis),int(205*emphasis),int(225*emphasis));
+   centered(visualFace.shownEvent==2?"嗨，收到啦":"看见你啦",std::max(26,cy-66),ink);
+  }
+ }
  int gap=w*70/320,breathing=int(2*sin(now/(standby.resting()?2200.0:1100.0)));
  uint32_t blinkPhase=now%4900;float open=1;
  if(!standby.resting()&&!restRitual.active(now)&&daily.kind!=DailyKind::blink&&blinkPhase>4680)open=fabs((int)blinkPhase-4790)/110.0;
+ if(desk.musicLive(now)&&desk.playing&&desk.page==2&&mood!=FaceMood::waiting&&!(pet&&uint32_t(now-lastPet)<2600)&&!voiceFace.active(now)){
+  cx+=int(lroundf(4*sin(now/650.0)));cy+=int(lroundf(2*sin(now/900.0)));p.eyeCurve=-3;p.eyeHeight=1;p.mouthCurve=3;
+ }
  if(settings.skin==1){drawCatSkin(canvas,p,cx,cy,open,breathing,now,FACE_INK);return;}
  for(int side=-1;side<=1;side+=2){
   int x=cx+side*gap,y=cy-12+breathing+int(lroundf(side<0?p.leftLift:p.rightLift));
@@ -302,6 +341,9 @@ void notePaper(int w){
 }
 void home(uint32_t now){
  int w=canvas.width(),h=canvas.height();drawFace(now);
+ if(desk.recapLive(now)&&syncState.live()){canvas.drawRoundRect(12,28,100,24,7,0x77D5);text(String("接力 ")+desk.rows.size(),28,31,0x77D5);}
+ if(desk.musicLive(now)){canvas.drawRoundRect(116,28,108,24,7,0x3186);text("音乐",154,31,ACCENT);}
+
  canvas.drawRoundRect(228,28,80,34,7,0x3186);
  text(companion.focus.phase==FocusTimer::running?(companion.focus.resting()?"休息中":"专注中"):companion.focus.phase==FocusTimer::paused?"已暂停":companion.focus.phase==FocusTimer::done?"下一轮":"番茄钟",244,37,ACCENT);
  int active=0,waiting=0;for(const auto&t:ui.tasks){if(t.state=="running")active++;if(t.state=="needs_input")waiting++;}
@@ -350,7 +392,7 @@ void home(uint32_t now){
  }else if(companion.focus.finished(now)){
   summary=companion.focus.phase==FocusTimer::done?"休息结束 · 可开始下一轮":"专注结束 · 休息五分钟";summaryColor=0x77D5;
  }else if(companion.welcome(now)){
-  summary="回来啦";summaryColor=ACCENT;
+  summary=desk.recapLive(now)?String("回来啦 · ")+desk.rows.size()+" 项进展待看":"回来啦";summaryColor=ACCENT;
  }else if(settings.awayRest&&companion.away(now)&&standby.resting()){
   summary="离席休息";summaryColor=MUTED;
  }else if(companion.focus.active()){
@@ -533,13 +575,48 @@ void focusTap(FocusHit hit,uint32_t now){
  }
  saveFocusSummary(true);standby.wake(now);daily.cancel(now);fullRedraw=true;
 }
+void drawExtras(uint32_t now){
+ backButton();
+ if(desk.page==1){
+  text("回来接力",116,38,0x77D5);canvas.drawRoundRect(224,28,84,36,7,0x3186);text("收起",250,38,MUTED);
+  if(!desk.recapLive(now)||!syncState.live()){centered("当前没有接力消息",128,MUTED);return;}
+  int waiting=0;for(auto& row:desk.rows)waiting+=row.kind=="wait";
+  text(String(desk.rows.size()-waiting)+" 个新结果 · "+waiting+" 个待回应",16,72,ACCENT);
+  canvas.setClipRect(12,94,296,128);
+  int offset=int(lroundf(desk.scroll.visualOffset()));
+  for(int i=0;i<int(desk.rows.size());i++){
+   const auto& row=desk.rows[i];int y=94+i*56-offset;
+   if(y+56<=94||y>=222)continue;
+   canvas.drawFastHLine(16,y+53,288,0x2104);
+   cropped(row.title.c_str(),20,y+5,280,&fonts::efontCN_16);
+   text(row.kind=="wait"?"待你回应 · 按住打开":"本轮结束 · 按住打开",20,y+29,row.kind=="wait"?0xFD6B:0x77D5);
+   if(gesture.active&&extraPressTarget==row.id&&extraPressToken==desk.token&&gesture.maxTravel<=8)
+    canvas.fillRoundRect(20,y+49,int(280*std::min(1.0f,uint32_t(now-gesture.startAt)/900.0f)),2,1,ACCENT);
+  }
+  canvas.clearClipRect();
+  centered(*desk.feedback(now)?desk.feedback(now):desk.partial?"恢复后的状态 · 过程可能不完整":"长按打开 · 上下滑动查看",224,MUTED);
+ }else{
+  int waiting=0;if(syncState.live())for(const auto& t:ui.tasks)waiting+=t.state=="needs_input";
+  if(waiting)text(String("待回应 ")+waiting+" >",154,38,0xFD6B);
+  else text(desk.player=="com.tencent.QQMusicMac"?"QQ 音乐":"网易云音乐",154,38,ACCENT);
+  if(!desk.musicLive(now)){centered("等待播放器信息",128,MUTED);return;}
+  drawFace(now);
+  cropped(desk.title.c_str(),16,148,288,&fonts::efontCN_16);
+  cropped(desk.artist.c_str(),16,171,288,&fonts::efontCN_16);
+  canvas.fillRoundRect(16,191,288,3,1,0x2104);
+  if(desk.duration)canvas.fillRoundRect(16,191,288*desk.progress(now)/desk.duration,3,1,ACCENT);
+  const char* labels[]={"上一首",desk.playing?"暂停":"播放","下一首"};
+  for(int i=0;i<3;i++){canvas.drawRoundRect(12+i*99,200,92,36,7,0x3186);text(labels[i],32+i*99,210,ACCENT);}
+  if(*desk.feedback(now)){canvas.fillRect(12,167,296,21,BG);centered(desk.feedback(now),170,MUTED);}
+ }
+}
 uint32_t frameDrawUs=0,framePushUs=0;
 void render(){
- uint32_t start=micros();bool full=fullRedraw||settingsOpen||focusOpen||!ui.details||!lastWasDetails;
- if(ui.details&&!settingsOpen&&!focusOpen)rebuildTaskCache();
+ uint32_t start=micros();bool full=fullRedraw||desk.page||settingsOpen||focusOpen||!ui.details||!lastWasDetails;
+ if(ui.details&&!desk.page&&!settingsOpen&&!focusOpen)rebuildTaskCache();
  if(full){canvas.fillScreen(BG);if(!focusOpen)statusBar();}
  else canvas.fillRect(0,listLayout().rowsTop(),canvas.width(),listLayout().viewportHeight(),BG);
- if(focusOpen)drawFocus(millis());else if(settingsOpen)drawSettings();else if(ui.details)details(millis(),full);else home(millis());
+ if(desk.page)drawExtras(millis());else if(focusOpen)drawFocus(millis());else if(settingsOpen)drawSettings();else if(ui.details)details(millis(),full);else home(millis());
  uint32_t drawn=micros();
  if(!full)M5.Display.setClipRect(0,listLayout().rowsTop(),canvas.width(),listLayout().viewportHeight());
  canvas.pushSprite(0,0);M5.Display.clearClipRect();
@@ -565,7 +642,7 @@ void snapshot(){
  uint8_t row[640];
  for(int y=0;y<h;y++){for(int x=0;x<w;x++){uint16_t c=canvas.readPixel(x,y);row[2*x]=c>>8;row[2*x+1]=c&255;}Serial.write(row,w*2);}
 }
-void inspect(){Serial.printf("UI\t%s\t%d\t%d\t%d\t%d\t%d\n",ui.details?"list":"home",(int)ui.scroll.offset,(int)ui.tasks.size(),headReady,headRaw,headHits);}
+void inspect(){if(localCamera.active())return;Serial.printf("UI\t%s\t%d\t%d\t%d\t%d\t%d\n",ui.details?"list":"home",(int)ui.scroll.offset,(int)ui.tasks.size(),headReady,headRaw,headHits);}
 void inspectStandby(){Serial.printf("STANDBY\t%s\tbrightness=%d\tidle_ms=%u\tconnected=%d\n",standby.resting()?"rest":"awake",displayBrightness,unsigned(standby.idleFor(millis())),connected);}
 void inspectProximityStandby(){
  uint8_t control=0xFF;
@@ -575,7 +652,7 @@ void inspectProximityStandby(){
 void reply(const String& message,SyncTransport via){if(via==SyncTransport::ble)ble.reply(message+"\n");else Serial.println(message);}
 void deviceReport(const String& seq,SyncTransport via){
  String page=focusOpen?"focus":settingsOpen?"settings":ui.details?"list":"home";
- String report="DEVICE\t"+seq+"\t0.46\t"+String(battery)+"\t"+String(charging?1:0)+"\t"+page;
+ String report="DEVICE\t"+seq+"\t0.47\t"+String(battery)+"\t"+String(charging?1:0)+"\t"+page;
  report+="\t"+String(standby.resting()?1:0)+"\t"+String(displayBrightness);
  report+="\t"+String(settings.light)+"\t"+String(settings.rest)+"\t"+String(settings.petMotion?1:0);
  report+="\t"+String(settingsSaveFailed?1:0)+"\t"+String(millis()/1000)+"\t"+String(syncState.age(millis()));
@@ -603,14 +680,67 @@ void companionReport(const String& seq,SyncTransport via){
  tickFocus(now);
  reply("COMPANION\t"+seq+"\t"+companion.presence(now)+"\t"+companion.focus.name()+"\t"+String(companion.focus.remaining(now))+"\t"+String(companion.focus.total)+"\t"+String(companion.welcome(now)?1:0)+"\t"+companion.focus.stageName()+"\t"+String(companion.focus.focusTotal)+"\t"+String(companion.focus.round)+"\t"+String(focusSummary.day())+"\t"+String(focusSummary.seconds())+"\t"+String(focusSummary.rounds())+"\t"+String(focusSummarySaveFailed?1:0),via);
 }
+bool receiveExtras(const String& kind,int& p,SyncTransport via){
+ if(!(kind=="DESK_INFO"||kind=="DESK_STATE"||kind=="RECAP_SET"||kind=="MUSIC_SET"||kind=="DESK_POLL"||kind=="DESK_RESULT"))return false;
+ String seq=field(line,p);uint32_t now=millis();
+ auto invalid=[&](){reply("DESK_ERROR\t"+seq+"\tinvalid",via);return true;};
+ auto integer=[](const String& v,uint32_t limit){return number(v)&&v.length()<=10&&strtoull(v.c_str(),nullptr,10)<=limit;};
+ if(!integer(seq,UINT32_MAX))return invalid();
+ if(kind=="DESK_INFO"){if(p<int(line.length()))return invalid();reply("DESK_CAP\t"+seq+"\t1",via);return true;}
+ if(kind=="DESK_STATE"){reply("DESK_STATE\t"+seq+"\t"+String(desk.page)+"\t"+String(desk.recapLive(now)?desk.rows.size():0)+"\t"+String(desk.musicLive(now)?1:0)+"\t"+String(desk.playing?1:0),via);return true;}
+ if(!syncState.live()||syncState.transport!=via){reply("DESK_ERROR\t"+seq+"\towner",via);return true;}
+ if(kind=="RECAP_SET"){
+  String token=field(line,p),partial=field(line,p),count=field(line,p);
+  if(!integer(token,UINT32_MAX)||!integer(partial,1)||!integer(count,8))return invalid();
+  std::vector<RecapRow> rows;
+  for(int i=0;i<count.toInt();i++){
+   String id=field(line,p),state=field(line,p),encoded=field(line,p);std::string title;
+   if(id.length()!=36||(state!="wait"&&state!="done")||!StickyNote::unhex(encoded.c_str(),title)||!StickyNote::validText(title))return invalid();
+   for(char c:std::string(id.c_str()))if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')||c=='-'))return invalid();
+   rows.push_back({id.c_str(),state.c_str(),title});
+  }
+  if(p<int(line.length()))return invalid();desk.setRecap(uint32_t(strtoull(token.c_str(),nullptr,10)),partial=="1",rows,now);
+ }else if(kind=="MUSIC_SET"){
+  String active=field(line,p);if(!integer(active,1))return invalid();
+  if(active=="0"){if(p<int(line.length()))return invalid();desk.musicPresent=false;desk.playing=false;}
+  else{
+   String source=field(line,p),key=field(line,p),playing=field(line,p),elapsed=field(line,p),duration=field(line,p),titleHex=field(line,p),artistHex=field(line,p);std::string title,artist;
+   if(p<int(line.length())||(source!="com.tencent.QQMusicMac"&&source!="com.netease.163music")||key.length()!=16||!integer(playing,1)||!integer(elapsed,86400)||!integer(duration,86400)||!StickyNote::unhex(titleHex.c_str(),title)||!StickyNote::validText(title)||!StickyNote::unhex(artistHex.c_str(),artist)||(!artist.empty()&&!StickyNote::validText(artist)))return invalid();
+   for(char c:std::string(key.c_str()))if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return invalid();
+   desk.player=source.c_str();desk.key=key.c_str();desk.playing=playing=="1";desk.elapsed=elapsed.toInt();desk.duration=duration.toInt();desk.title=title;desk.artist=artist;desk.musicAt=now;desk.musicPresent=true;
+  }
+ }else if(kind=="DESK_POLL"){
+  String mode=field(line,p);if(p<int(line.length())||(mode!="arm"&&mode!="poll"))return invalid();
+  if(mode=="arm"){desk.pending=desk.inFlight=false;desk.armed=true;}
+  if(desk.pending&&uint32_t(now-desk.eventAt)<6000){desk.pending=false;reply("DESK_EVENT\t"+seq+"\t"+String(desk.serial)+"\t"+desk.action.c_str()+"\t"+desk.target.c_str()+"\t"+desk.eventToken.c_str(),via);}
+  else reply("DESK_EVENT\t"+seq+"\t0\t-\t-\t0",via);
+  return true;
+ }else{
+  String id=field(line,p),result=field(line,p);
+  if(p<int(line.length())||!integer(id,UINT32_MAX)||!(result=="ok"||result=="opened"||result=="sent"||result=="headphones"||result=="stale"||result=="locked"||result=="failed"))return invalid();
+  if(desk.inFlight&&!desk.pending&&uint32_t(strtoull(id.c_str(),nullptr,10))==desk.serial){desk.inFlight=false;desk.result=result.c_str();desk.resultAt=now;if(desk.action=="dismiss"&&result=="ok"){desk.page=0;ui.returnHome(now);}}
+ }
+ fullRedraw=true;reply("DESK_OK\t"+seq+"\tok",via);return true;
+}
 void receive(SyncTransport via=SyncTransport::usb){
  int p=0;String kind=field(line,p);
+ if(receiveExtras(kind,p,via))return;
  if(kind=="TOUCH_INFO"&&via==SyncTransport::usb){
   Serial.printf("TOUCH\tready=%d\trecovered=%d\tcount=%d\n",touchControllerReady(touchIo),touchStartup.recovered,M5.Touch.getCount());return;
  }
  if(kind=="PING"){reply("READY\t"+ble.deviceId,via);return;}
  if(kind=="SYNC_INFO"){
   reply(String("SYNC\t")+(connected?"connected":"waiting")+"\t"+(syncState.transport==SyncTransport::ble?"ble":"usb")+"\t"+(syncState.available?"ok":"unavailable")+"\tage="+syncState.age(millis()),via);return;
+ }
+ if(kind=="VOICE"){
+  String seq=field(line,p),level=field(line,p);uint32_t now=millis();
+  if(!number(seq)||seq.length()>10||p<int(line.length())||(level!="-1"&&level!="0"&&level!="1"&&level!="2"&&level!="3")){
+   reply("ERROR\trequest",via);return;
+  }
+  if(!syncState.live()||syncState.transport!=via){reply("ERROR\towner",via);return;}
+  voiceFace.accept(level.toInt(),now);
+  if(voiceFace.active(now)){daily.cancel(now);restRitual.cancel();standby.wake(now);}
+  fullRedraw=true;reply("VOICE_ACK\t"+seq,via);return;
  }
  if(kind=="DEVICE_INFO"||kind=="DEVICE_SET"){
   String seq=field(line,p);
@@ -680,7 +810,7 @@ void receive(SyncTransport via=SyncTransport::usb){
    valid=number(minutes)&&minutes.length()<=2&&p>=int(line.length())&&((action=="start"&&minutes.toInt()>=1&&minutes.toInt()<=90)||((action=="stop"||action=="pause"||action=="resume"||action=="next")&&minutes=="0"));
    if(valid){
     if(action=="start"&&companion.focus.active()){reply("COMPANION_ERROR\t"+seq+"\tbusy",via);return;}
-    if(action=="start"){focusMinutes=minutes.toInt();companion.focus.start(minutes.toInt()*60,now);focusPresentation.hide();}
+    if(action=="start"){focusMinutes=minutes.toInt();companion.focus.start(minutes.toInt()*60,now);openFocus(now);}
     else if(action=="stop")companion.focus.stop();
     else if(action=="next"){if(!companion.focus.next(now)){reply("COMPANION_ERROR\t"+seq+"\tbusy",via);return;}focusPresentation.hide();}
     else if(action=="pause"&&!companion.focus.pause(now)){reply("COMPANION_ERROR\t"+seq+"\tbusy",via);return;}
@@ -695,6 +825,20 @@ void receive(SyncTransport via=SyncTransport::usb){
  if(kind=="BIND_BLE"){
   String key=field(line,p);if(p<int(line.length())||!ble.provision(key)){Serial.println("BIND\terror");return;}
   Serial.println("BIND\tok\t"+ble.deviceId);return;
+ }
+ if(kind=="CAM_INFO"){Serial.printf("CAM_CAP\t1\t%d\t%d\n",localCamera.active(),localCamera.busy());return;}
+ if(kind=="CAM_START"){bool ok=localCamera.begin(millis());Serial.println(ok?"CAM_OK":"CAM_ERROR\tinit");fullRedraw=true;return;}
+ if(kind=="CAM_STOP"){localCamera.stop();visualFace.clear();Serial.println("CAM_OFF");fullRedraw=true;return;}
+ if(kind=="CAM_GET"){
+  String seq=field(line,p);
+  if(!number(seq)||seq.length()>9||p<int(line.length())||!localCamera.request(seq.toInt(),millis()))Serial.println("CAM_ERROR\trequest");
+  return;
+ }
+ if(kind=="VISUAL_CLEAR"){visualFace.clear();fullRedraw=true;Serial.println("VISUAL_OK");return;}
+ if(kind=="VISUAL"){
+  int dx=0,dy=0,event=0;char tail=0;
+  if(!localCamera.active()||sscanf(line.c_str(),"VISUAL\t%d\t%d\t%d%c",&dx,&dy,&event,&tail)!=3||!visualFace.accept(dx,dy,event,millis()))Serial.println("VISUAL_ERROR");
+  else {if(event>0&&!companion.away(millis())&&!focusOpen&&!ui.details&&!settingsOpen){standby.wake(millis());restRitual.cancel();daily.cancel(millis());}fullRedraw=true;Serial.printf("VISUAL_OK\t%s\n",visualFeedback(millis()));}return;
  }
  if(kind=="SHOT"){snapshot();return;}
  if(kind=="INFO"){inspect();return;}
@@ -718,6 +862,7 @@ void receive(SyncTransport via=SyncTransport::usb){
  }
  if(kind=="HOME_VIEW"){daily.cancel(millis());focusOpen=false;settingsOpen=false;ui.returnHome(millis());fullRedraw=true;inspect();return;}
  if(kind=="STANDBY_INFO"){inspectStandby();return;}
+ if(kind=="VOICE_INFO"){Serial.printf("VOICE_STATE\t%d\n",voiceFace.current(millis()));return;}
  if(kind=="FACE_INFO"){Serial.printf("FACE\t%s\n",faceName(selectedFace(millis())));return;}
  if(kind=="RITUAL_INFO"){Serial.printf("RITUAL\t%s\t%u\n",restRitual.name(millis()),unsigned(millis()-restRitual.since));return;}
  if(kind=="RITUAL_PREVIEW"&&line=="RITUAL_PREVIEW\twake"&&!standby.resting()&&dailyEligible(millis())){
@@ -793,7 +938,7 @@ void receive(SyncTransport via=SyncTransport::usb){
  uint32_t beforeNotice=ui.noticeSerial;
  uint32_t beforeUnread=ui.unread.revision;
  bool live=syncState.live()&&syncState.transport==via&&!baseline&&dataOk;
- if(!live)desktopAction.reset();
+ if(!live){desktopAction.reset();desk.clear();}
  standby.observe(ui.tasks,next,connected&&syncState.available==dataOk&&!baseline,millis());
  ui.update(next,millis(),live);connected=true;lastPacket=millis();
  syncState.accept(lastPacket,via,dataOk,goodSeconds,age);
@@ -804,7 +949,7 @@ void receive(SyncTransport via=SyncTransport::usb){
   daily.cancel(millis());
   standby.wake(millis());
   fullRedraw=true;
-  Serial.printf("NOTICE\t%s\tcompleted=%d\n",ui.latestNotice.kind==NoticeKind::waiting?"waiting":"done",ui.latestNotice.completed);
+  if(!localCamera.active())Serial.printf("NOTICE\t%s\tcompleted=%d\n",ui.latestNotice.kind==NoticeKind::waiting?"waiting":"done",ui.latestNotice.completed);
   // 仅此刻的新事件有资格触发，开关变化和重连不补播；触摸时丢弃，不排队。
   if(!focusOpen)motion.request(settings.notificationMotion(ui.latestNotice),millis(),headRaw!=0,gesture.active||M5.Touch.getCount()>0);
  }
@@ -817,7 +962,7 @@ void setup(){
  daily.seed=esp_random();if(!daily.seed)daily.seed=7;
  // 使用连续触点坐标；防抖由我们自己的 4px 起滑与点击规则负责。
  M5.Touch.setFlickThresh(0);
- Serial.setRxBufferSize(4096);Serial.begin(115200);
+ Serial.setRxBufferSize(4096);Serial.setTxBufferSize(4096);Serial.begin(115200);
  touchStartup=initializeTouchController(touchIo);
  Serial.printf("TOUCH\tready=%d\trecovered=%d\n",touchStartup.ready,touchStartup.recovered);
  Preferences notes;if(notes.begin("weiguang_note",true)){
@@ -848,12 +993,14 @@ void setup(){
  canvas.setTextWrap(false,false);ui.scroll.rowHeight=listLayout().rowHeight();ui.scroll.viewportHeight=listLayout().viewportHeight();render();ble.begin();
 }
 void loop(){
+ localCamera.tick(millis());
+ if(!localCamera.active())visualFace.clear();
  std::string wireless;
  if(ble.poll(wireless)){String saved=line;line=String(wireless.c_str());receive(SyncTransport::ble);line=saved;}
  while(Serial.available()){char c=Serial.read();if(c=='\n'){if(!overflow)receive();line="";overflow=false;}else if(c!='\r'){if(line.length()<4096)line+=c;else overflow=true;}}
  M5.update();uint32_t now=millis();bool wasCelebrating=ui.celebrating;ui.tick(now);
- desktopAction.tick(now);
- if(syncState.expire(now)){desktopAction.reset();connected=false;standby.wake(now);cacheDirty=true;fullRedraw=true;}
+ desktopAction.tick(now);desk.tick(now);
+ if(syncState.expire(now)){desk.clear();desktopAction.reset();voiceFace.clear();connected=false;standby.wake(now);cacheDirty=true;fullRedraw=true;}
  tickFocus(now);observeDesktopPresses();
  if(wasCelebrating!=ui.celebrating)fullRedraw=true;
  stickyPress.observe(stickyNote,noteVisible());
@@ -866,6 +1013,11 @@ void loop(){
   }else{
   if(t.wasPressed()){
    daily.cancel(now);cat.cancel();
+   pressedExtraPage=desk.page;pressedExtraEntry=(!ui.details&&!focusOpen&&!settingsOpen)?DeskExtras::entry(t.x,t.y):0;
+   pressedExtraButton=desk.page==2?DeskExtras::musicButton(t.x,t.y):0;
+   extraHoldFired=false;extraPressTarget="";extraPressKey=desk.key;extraPressToken=desk.token;
+   if(desk.page==1&&t.y>=94&&t.y<222){int i=(t.y-94+int(desk.scroll.offset))/56;if(i>=0&&i<int(desk.rows.size()))extraPressTarget=desk.rows[i].id;desk.scroll.begin(now);}
+
    pressedInFocus=focusOpen;pressedFocusPhase=companion.focus.phase;pressedFocusStage=companion.focus.stage;
    pressedFocusControls=focusPresentation.controls(now,companion.focus.phase!=FocusTimer::off);
    pressedFocus=FocusLayout::hit(t.x,t.y,companion.focus.phase!=FocusTimer::off);
@@ -876,17 +1028,24 @@ void loop(){
    pressedHomeFocus=!ui.details&&!settingsOpen&&!focusOpen&&homeFocusEntry(t.x,t.y);
    waitingPress.begin(waitingTask(),!ui.details&&!settingsOpen&&!focusOpen&&desktopAction.armed&&!desktopAction.inFlight,waitingRegion,t.x,t.y);
    pressedInSettings=settingsOpen;pressedSetting=SettingsLayout::hit(t.x,t.y,settingsPage);
-   pressedInList=ui.details&&!settingsOpen&&!focusOpen;pressedHit=listLayout().hit(t.x,t.y);
+   pressedInList=ui.details&&!desk.page&&!settingsOpen&&!focusOpen;pressedHit=listLayout().hit(t.x,t.y);
    pressedFocusEntry=pressedInList&&FocusLayout::entry(t.x,t.y);
    pressedSettingsEntry=pressedInList&&SettingsLayout::entry(t.x,t.y);
    pressedInRows=pressedInList&&listLayout().inRows(t.x,t.y);
-   gesture.begin(t.x,t.y,now,pressedInRows);
+   gesture.begin(t.x,t.y,now,pressedInRows||(pressedExtraPage==1&&t.y>=94&&t.y<222));
    if(pressedInList)ui.scroll.begin(now);
    touchFeedback=true;touchFeedbackAt=now;touchX=t.x;touchY=t.y;
    if(pressedHit==Hit::back)fullRedraw=true;
   }
   if(gesture.active&&t.isPressed()&&!t.wasReleased()){
    int dy=gesture.move(t.x,t.y);if(pressedInRows)ui.scroll.drag(dy,now);
+   if(pressedExtraPage==1&&desk.page==1&&!extraPressTarget.empty()){
+    desk.scroll.drag(dy,now);
+    int i=(t.y-94+int(desk.scroll.offset))/56;
+    if(!extraHoldFired&&extraPressToken==desk.token&&desk.recapLive(now)&&syncState.live()&&gesture.maxTravel<=8&&gesture.axis==Axis::pending&&t.y>=94&&t.y<222&&i>=0&&i<int(desk.rows.size())&&desk.rows[i].id==extraPressTarget&&uint32_t(now-gesture.startAt)>=900){
+     extraHoldFired=true;desk.request("open",extraPressTarget,now);fullRedraw=true;
+    }
+   }
    touchX=t.x;touchY=t.y;touchFeedbackAt=now;
    if(pressedInFocus&&pressedFocusControls)focusPresentation.reveal(now);
    if(pressedInFocus&&focusOpen){
@@ -901,7 +1060,17 @@ void loop(){
   if(t.wasReleased()){
    auto action=gesture.release(t.x,t.y,now);
    touchFeedbackAt=now;
-   if(pressedInFocus&&focusOpen){
+   if(pressedExtraPage){
+    if(pressedExtraPage==desk.page){
+     if(desk.page==1){desk.scroll.drag(action.dragY,now);desk.scroll.end(now);}
+     if(action.tap&&gesture.startX<96&&t.x<96&&gesture.startY>=28&&gesture.startY<64&&t.y>=28&&t.y<64){desk.page=0;ui.returnHome(now);}
+     else if(action.tap&&desk.page==1&&gesture.startX>=224&&t.x>=224&&gesture.startY>=28&&gesture.startY<64&&t.y>=28&&t.y<64)desk.request("dismiss","-",now);
+     else if(action.tap&&desk.page==2&&gesture.startX>=116&&t.x>=116&&gesture.startY>=28&&gesture.startY<64&&t.y>=28&&t.y<64){bool waiting=false;if(syncState.live())for(auto& row:ui.tasks)waiting|=row.state=="needs_input";if(waiting){desk.page=0;ui.returnHome(now);}}
+     else if(action.tap&&desk.page==2&&pressedExtraButton&&pressedExtraButton==DeskExtras::musicButton(t.x,t.y)&&extraPressKey==desk.key&&desk.musicLive(now))desk.request(pressedExtraButton==1?"previous":pressedExtraButton==2?"toggle":"next",desk.key,now);
+    }
+    fullRedraw=true;
+   }
+   else if(pressedInFocus&&focusOpen){
     if(focusWaitingPress.captured){
      focusPresentation.reveal(now);fullRedraw=true;
     }else if(action.tap){
@@ -919,7 +1088,9 @@ void loop(){
     }
    }
    else if(!pressedInList&&!ui.details&&!settingsOpen&&!focusOpen){
-    if(stickyPress.captured){
+    if(action.tap&&pressedExtraEntry&&pressedExtraEntry==DeskExtras::entry(t.x,t.y)&&((pressedExtraEntry==1&&desk.recapLive(now)&&syncState.live())||(pressedExtraEntry==2&&desk.musicLive(now)))){
+     desk.page=pressedExtraEntry;ui.details=true;desk.scroll.reset(now);fullRedraw=true;
+    }else if(stickyPress.captured){
      if(stickyPress.release(stickyNote,noteVisible(),gesture,t.x,t.y,now)){
       StickyNote next;if(!*stickyNote.update(stickyPress.revision,"done","",next))persistNote(next);
       fullRedraw=true;
@@ -946,7 +1117,7 @@ void loop(){
  if(headReady&&now-lastHead>=50){
   lastHead=now;uint8_t raw=0;
   if(head.readRegister(SI12T_OUTPUT1_ADDR,&raw,1)){
-   int next=raw&0x3F;if(next>0){lastPet=now;pet=true;if(headRaw<=0){headHits++;Serial.printf("PET\t%d\n",headHits);}}
+   int next=raw&0x3F;if(next>0){lastPet=now;pet=true;if(headRaw<=0){headHits++;if(!localCamera.active())Serial.printf("PET\t%d\n",headHits);}}
    headRaw=next;
   }else headRaw=-1;
  }
@@ -956,28 +1127,28 @@ void loop(){
  // 反馈观察同一套去抖与避让门槛，不新增动作或重试。
  if(motion.feedback.update(headReady?headRaw:-1,screenTouch,motion.active(),now)){
   pet=true;lastPet=now;fullRedraw=true;
-  Serial.printf("PET\thead\t%u\n",unsigned(now));
+  if(!localCamera.active())Serial.printf("PET\thead\t%u\n",unsigned(now));
   motion.requestPet(now,true);
  }
  if(motion.isPetting()){pet=true;lastPet=now;}
  motion.tick(now,headRaw>0,screenTouch);
  if(settingsDirty&&!screenTouch&&!motion.active()&&uint32_t(now-settingsChangedAt)>=1200)saveSettings();
  if(clockReady){uint32_t elapsed=(now-clockTick)/1000,next=(clockSeconds+elapsed)%86400;if(next/60!=clockSeconds/60)fullRedraw=true;clockSeconds=next;clockTick+=elapsed*1000;}
- if(lastBattery==0||now-lastBattery>=10000){lastBattery=now;int before=battery;bool wasCharging=charging;battery=M5.Power.getBatteryLevel();if(battery<0||battery>100)battery=-1;charging=M5.Power.isCharging()==m5::Power_Class::is_charging;if(before!=battery||wasCharging!=charging)fullRedraw=true;Serial.printf("POWER\t%d\t%d\n",battery,charging?1:0);}
+ if(lastBattery==0||now-lastBattery>=10000){lastBattery=now;int before=battery;bool wasCharging=charging;battery=M5.Power.getBatteryLevel();if(battery<0||battery>100)battery=-1;charging=M5.Power.isCharging()==m5::Power_Class::is_charging;if(before!=battery||wasCharging!=charging)fullRedraw=true;if(!localCamera.active())Serial.printf("POWER\t%d\t%d\n",battery,charging?1:0);}
  bool wasResting=standby.resting();
  if(!screenTouch&&!motion.active())saveFocusSummary();
  bool waiting=false;if(syncState.live())for(const auto&t:ui.tasks)waiting|=t.state=="needs_input";
- bool interaction=screenTouch||cat.content(now)||headRaw>0||motion.active()||ui.celebrating||(pet&&uint32_t(now-lastPet)<2600);
+ bool interaction=voiceFace.active(now)||screenTouch||cat.content(now)||headRaw>0||motion.active()||ui.celebrating||(pet&&uint32_t(now-lastPet)<2600);
  if(!focusOpen&&settings.awayRest&&companion.away(now)&&!waiting&&!interaction&&!companion.focus.finished(now)&&!(localWake&&uint32_t(now-localWakeAt)<10000))standby.settle(now);
- else standby.tick(now,syncState.live(),ui.tasks,interaction||focusOpen||companion.welcome(now)||companion.focus.phase==FocusTimer::running||companion.focus.finished(now)||(settings.awayRest&&companion.away(now)&&localWake&&uint32_t(now-localWakeAt)<10000));
- bool ritualBlocked=waiting||ui.celebrating||companion.welcome(now)||companion.focus.finished(now)||ui.details||settingsOpen||focusOpen||screenTouch;
+ else standby.tick(now,syncState.live(),ui.tasks,interaction||desk.page||focusOpen||companion.welcome(now)||companion.focus.phase==FocusTimer::running||companion.focus.finished(now)||(settings.awayRest&&companion.away(now)&&localWake&&uint32_t(now-localWakeAt)<10000));
+ bool ritualBlocked=voiceFace.active(now)||waiting||ui.celebrating||companion.welcome(now)||companion.focus.finished(now)||ui.details||settingsOpen||focusOpen||screenTouch;
  restRitual.update(standby.resting(),headRaw>0,ritualBlocked,faceAnimator.pose(now),now);
  daily.tick(now,dailyEligible(now),dailyContext(now));
- if(wasResting!=standby.resting()){fullRedraw=true;inspectStandby();}
+ if(wasResting!=standby.resting()){fullRedraw=true;if(!localCamera.active())inspectStandby();}
  int nextBrightness=int(lroundf(standby.brightness(now)));
  if(nextBrightness!=displayBrightness){displayBrightness=nextBrightness;M5.Display.setBrightness(displayBrightness);}
  if(cacheDirty)prepareTaskTitles();
- bool reading=ui.details&&!settingsOpen&&!focusOpen&&!standby.resting()&&!screenTouch&&!ui.scroll.held&&!ui.scroll.moving();
+ bool reading=ui.details&&!desk.page&&!settingsOpen&&!focusOpen&&!standby.resting()&&!screenTouch&&!ui.scroll.held&&!ui.scroll.moving();
  float offset=ui.scroll.visualOffset();
  if(std::fabs(readingOffset-offset)>.01f)reading=false;
  readingOffset=offset;
@@ -997,6 +1168,6 @@ void loop(){
  listProgress.tick(progressFocus>=0?ui.tasks[progressFocus].id+"\n"+ui.tasks[progressFocus].progressHint:"",progressFocus,progressFocus>=0?progressWidths[progressFocus]:0,canvas.width()-52,now,progressFocus>=0);
  if(touchFeedback&&!gesture.active&&uint32_t(now-touchFeedbackAt)>=140){touchFeedback=false;fullRedraw=true;}
  bool feedbackFrame=touchFeedback;
- bool needsFrame=focusOpen||!ui.details||fullRedraw||cacheDirty||feedbackFrame||lastDrawOffset!=int(lroundf(ui.scroll.visualOffset()))||lastTitleIndex!=titlePlayback.index||lastTitleOffset!=titlePlayback.offset||lastProgressIndex!=listProgress.index||lastProgressOffset!=listProgress.offset;
+ bool needsFrame=desk.page||focusOpen||!ui.details||fullRedraw||cacheDirty||feedbackFrame||lastDrawOffset!=int(lroundf(ui.scroll.visualOffset()))||lastTitleIndex!=titlePlayback.index||lastTitleOffset!=titlePlayback.offset||lastProgressIndex!=listProgress.index||lastProgressOffset!=listProgress.offset;
  if(needsFrame&&now-lastFrame>=(ui.details?16:standby.resting()&&!restRitual.active(now)?160:65)&&canvas.width()){lastFrame=now;render();}delay(1);
 }

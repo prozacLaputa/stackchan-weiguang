@@ -10,7 +10,15 @@ A StackChan desk companion for coding, focus sessions and music, with optional c
 
 Firmware + a local Mac bridge + a native control panel. Task sync uses USB or Bluetooth without robot Wi-Fi. Tasks, timers, notes, music metadata and local vision make no cloud-model calls. **Optional voice uses the factory cloud service, Mac internet access and your own valid device identity. It does not use a Codex subscription; pricing and long-term quotas remain unknown.** This independent project is not affiliated with M5Stack or OpenAI.
 
-**Experimental v0.47 · updated October 15, 2026.** This is a source update, without a signed/notarized Mac installer or prebuilt firmware. QQ Music display and pause/play were verified on hardware; NetEase playback and the natural return-to-work flow still await hands-on acceptance.
+**Experimental v0.48 · updated October 19, 2026.** This is a source update, without a signed/notarized Mac installer or prebuilt firmware. QQ Music display and pause/play were verified on hardware; NetEase playback and the natural return-to-work flow still await hands-on acceptance.
+
+## What changed
+
+- **Local Mac app**: migrate an existing installation to `/Applications/微光控制台.app`, with Spotlight, Dock and native menus. Optional voice/vision components live in a fixed per-user data directory rather than the development checkout. System dependencies are still required.
+- **Motion recovery**: for eligible faults, save evidence and check torque release, position and stillness over BLE before restoring motion. No test nod, robot reboot or Pomodoro reset; existing safety limits remain.
+- **Main-session notifications**: exclude subagents and background approval threads. Notify once after an explicit end remains final for about one second; pending questions, immediate continuation, duplicate events and reconnection do not replay old completions.
+
+[Local app setup and updates](LOCAL_APP_INSTALL.md) · [Changelog](CHANGELOG.md)
 
 ## Preview
 

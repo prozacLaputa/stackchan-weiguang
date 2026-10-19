@@ -103,6 +103,7 @@ StandbyState standby;
 WakeTouchGate wakeTouch;
 int displayBrightness=StandbyState::awakeBrightness;
 QuietMotion motion;
+String motionRecoverySeq;SyncTransport motionRecoveryVia=SyncTransport::ble;
 TouchGesture gesture;Hit pressedHit=Hit::none;bool pressedInList=false,pressedInRows=false;
 M5Canvas canvas(&M5.Display);
 M5Canvas taskCache(&M5.Display);
@@ -652,7 +653,7 @@ void inspectProximityStandby(){
 void reply(const String& message,SyncTransport via){if(via==SyncTransport::ble)ble.reply(message+"\n");else Serial.println(message);}
 void deviceReport(const String& seq,SyncTransport via){
  String page=focusOpen?"focus":settingsOpen?"settings":ui.details?"list":"home";
- String report="DEVICE\t"+seq+"\t0.47\t"+String(battery)+"\t"+String(charging?1:0)+"\t"+page;
+ String report="DEVICE\t"+seq+"\t0.48\t"+String(battery)+"\t"+String(charging?1:0)+"\t"+page;
  report+="\t"+String(standby.resting()?1:0)+"\t"+String(displayBrightness);
  report+="\t"+String(settings.light)+"\t"+String(settings.rest)+"\t"+String(settings.petMotion?1:0);
  report+="\t"+String(settingsSaveFailed?1:0)+"\t"+String(millis()/1000)+"\t"+String(syncState.age(millis()));
@@ -662,6 +663,9 @@ void deviceReport(const String& seq,SyncTransport via){
  report+="\t"+String(motion.feedback.sensorOK?1:0)+"\t"+String(motion.feedback.event)+"\t"+String(motion.feedback.age(now));
  report+="\t"+String(motion.feedback.result)+"\t"+motion.feedback.reason+"\t"+String(motion.feedback.held()?1:0);
  report+="\t"+String(settings.daily)+"\t"+String(settings.awayRest?1:0)+"\t"+String(settings.greeting?1:0)+"\t"+String(settings.affection?1:0)+"\t"+String(settings.skin)+"\t"+String(settings.focusMotion?1:0);
+ const auto& f=motion.lastFault;
+ report+="\t"+String(f.id)+"\t"+f.reason+"\t"+String(f.at)+"\t"+String(f.position)+"\t"+String(f.command)+"\t"+String(f.load);
+ report+="\t"+String(f.phase)+"\t"+String(f.commandAge)+"\t"+String(f.sampleGap)+"\t"+String(motion.canRecover()?1:0);
  reply(report,via);
 }
 void tickFocus(uint32_t now){
@@ -741,6 +745,16 @@ void receive(SyncTransport via=SyncTransport::usb){
   voiceFace.accept(level.toInt(),now);
   if(voiceFace.active(now)){daily.cancel(now);restRitual.cancel();standby.wake(now);}
   fullRedraw=true;reply("VOICE_ACK\t"+seq,via);return;
+ }
+ if(kind=="MOTION_RECOVER"){
+  String seq=field(line,p),expected=field(line,p);uint32_t now=millis();
+  if(!number(seq)||seq.length()>10||!number(expected)||expected.length()>10||strtoull(expected.c_str(),nullptr,10)>UINT32_MAX||p<int(line.length())){reply("ERROR\trequest",via);return;}
+  if(!syncState.live()||syncState.transport!=via){reply("MOTION_RESULT\t"+seq+"\tconnection-lost",via);return;}
+  if(motionRecoverySeq.length()){reply("MOTION_RESULT\t"+seq+"\tbusy",via);return;}
+  const char* outcome=motion.beginRecovery(now,uint32_t(strtoull(expected.c_str(),nullptr,10)),headReady?headRaw:-1,gesture.active||M5.Touch.getCount()>0);
+  if(!strcmp(outcome,"checking")){motionRecoverySeq=seq;motionRecoveryVia=via;}
+  else reply("MOTION_RESULT\t"+seq+"\t"+outcome,via);
+  return;
  }
  if(kind=="DEVICE_INFO"||kind=="DEVICE_SET"){
   String seq=field(line,p);
@@ -976,7 +990,7 @@ void setup(){
  uint8_t probe=0;headReady=head.readRegister(SI12T_CTRL1_ADDR,&probe,1);
  if(headReady){head.begin();headReady=head.SI12T_Read_Sensitivity()==0x33;}
  Serial.printf("HEAD\t%d\n",headReady);
- motion.begin();
+ motion.seedFaults(esp_random());motion.begin();
  motion.configure(settings.petMotion,settings.waitMotion,settings.doneMotion,settings.focusMotion);
  daily.configure(settings.daily,millis());
  companion.configureGreeting(settings.greeting);
@@ -1131,6 +1145,13 @@ void loop(){
   motion.requestPet(now,true);
  }
  if(motion.isPetting()){pet=true;lastPet=now;}
+ if(motion.recovering()){
+  if(!syncState.live()||syncState.transport!=motionRecoveryVia)motion.cancelRecovery();
+  else motion.tickRecovery(now,headReady?headRaw:-1,screenTouch);
+ }
+ if(motionRecoverySeq.length()&&!motion.recovering()){
+  reply("MOTION_RESULT\t"+motionRecoverySeq+"\t"+motion.recoveryResult(),motionRecoveryVia);motionRecoverySeq="";
+ }
  motion.tick(now,headRaw>0,screenTouch);
  if(settingsDirty&&!screenTouch&&!motion.active()&&uint32_t(now-settingsChangedAt)>=1200)saveSettings();
  if(clockReady){uint32_t elapsed=(now-clockTick)/1000,next=(clockSeconds+elapsed)%86400;if(next/60!=clockSeconds/60)fullRedraw=true;clockSeconds=next;clockTick+=elapsed*1000;}

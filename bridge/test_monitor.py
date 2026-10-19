@@ -87,11 +87,11 @@ class StatusTests(unittest.TestCase):
     def test_completion_identity_is_fresh_and_not_inferred(self):
         t=Tracker();t.accept(event('task_started'))
         t.accept(event('task_complete','old'));self.assertEqual(t.notification_keys()[0],'')
-        t.accept(event('task_complete'));key=t.notification_keys()[0]
+        t.accept(event('task_complete'));key=t.notification_keys(time.time()+2)[0]
         self.assertEqual(len(key),16)
         self.assertEqual(t.notification_keys(time.time()+31)[0],'')
         t.accept(event('task_started','b'));t.accept(event('task_complete','b'))
-        self.assertNotEqual(t.notification_keys()[0],key)
+        self.assertNotEqual(t.notification_keys(time.time()+2)[0],key)
 
     def test_partial_answers_do_not_retrigger_waiting(self):
         t=Tracker();t.accept(event('task_started'));ask(t,call='a');ask(t,call='b')

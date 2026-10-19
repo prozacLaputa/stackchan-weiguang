@@ -14,11 +14,11 @@ import tempfile
 import time
 import zipfile
 
-VERSION = '0.47'
+VERSION = '0.48'
 LIMIT = 128 * 1024
 PARTS = 3
 CONNECTIONS = {'connected','waiting_ble','waiting_usb','waiting_ack','stopped'}
-MOTION = {'ready','moving','cooldown','disabled','unavailable','screen','release','sensor'}
+MOTION = {'ready','moving','cooldown','disabled','unavailable','screen','release','sensor','checking'}
 REASONS = {'none','not-initialized','bus-init','power-init','torque-release','calibration',
            'position-read','position-range','load-high','release-ack','torque-read','command-ack',
            'pet-command-ack','feedback-range','pet-follow-error','timeout','not-reached','return-ack',
@@ -47,13 +47,17 @@ def clean_device(value):
     value=value if isinstance(value,dict) else {};out={}
     for key,high in {'battery':100,'charging':1,'resting':1,'brightness':255,'light':3,'rest':4,'pet':1,
                      'save_error':1,'uptime':4294967,'sync_age':4294967,'wait_motion':1,'done_motion':1,
-                     'pet_cooldown_ms':5000,'head_sensor':1,'pet_event':4294967295,'pet_age':4294967,'head_down':1,'skin':1,'focus_motion':1}.items():
+                     'pet_cooldown_ms':5000,'head_sensor':1,'pet_event':4294967295,'pet_age':4294967,'head_down':1,'skin':1,'focus_motion':1,'motion_fault_id':4294967295,'motion_fault_at':4294967295,'motion_fault_phase':2,
+                     'motion_fault_command_age':4294967295,'motion_fault_sample_gap':4294967295,'motion_recoverable':1}.items():
         n=value.get(key)
         if type(n) is int and (-1 if key=='battery' else 0)<=n<=high:out[key]=n
+    for key,low,high in (('motion_fault_position',-32768,65535),('motion_fault_command',-1,1000),('motion_fault_load',-32768,32767)):
+        n=value.get(key)
+        if type(n) is int and low<=n<=high:out[key]=n
     version=value.get('firmware')
     if isinstance(version,str) and re.fullmatch(r'\d{1,3}\.\d{1,3}(?:\.\d{1,3})?',version):out['firmware']=version
     for key,choices in {'page':{'home','list','settings','game','focus'},'motion_state':MOTION,'motion_reason':REASONS,
-                        'pet_result':RESULTS,'pet_reason':REASONS}.items():
+                        'pet_result':RESULTS,'pet_reason':REASONS,'motion_fault_reason':REASONS}.items():
         if key in value:out[key]=code(value[key],choices)
     return out
 
@@ -114,8 +118,26 @@ class Journal:
         with os.fdopen(fd,'ab') as stream:
             os.fchmod(stream.fileno(),0o600);stream.write(encoded)
 
+    def capture_motion_fault(self,device):
+        safe=clean_device(device)
+        if not safe.get('motion_fault_id') or safe.get('motion_fault_reason') not in REASONS-{'none'}:return False
+        record={k:v for k,v in safe.items() if k.startswith('motion_fault_') or k in ('firmware','uptime')}
+        with journal_lock(self.directory):
+            path=self.directory/'motion-last-fault.json'
+            try:
+                old=json.loads(read_bounded(path,4096))
+                if isinstance(old,dict) and isinstance(old.get('device'),dict) and old['device'].get('motion_fault_id')==record['motion_fault_id']:return True
+            except (OSError,ValueError):pass
+            temp=self.directory/'motion-last-fault.json.tmp'
+            fd=os.open(temp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,'w') as stream:
+                json.dump({'schema':1,'at':time.time(),'device':record},stream);stream.flush();os.fsync(stream.fileno())
+            temp.replace(path)
+        return True
+
     def observe(self,value):
         now=time.time();safe=clean_snapshot(value,now)
+        if safe['device_live'] and safe['device'].get('motion_fault_id'):self.capture_motion_fault(safe['device'])
         changes=[];next_state=dict(self.last)
         with journal_lock(self.directory):
             if not self.started:
@@ -141,10 +163,11 @@ class Journal:
             transition('device',safe['device_error'] or 'ok','device_issue','device_recovered','ok')
             if safe['device_live'] and safe['device'].get('motion_state') in MOTION:
                 d=safe['device'];motion=d.get('motion_state')
-                condition=(motion+':'+d.get('motion_reason','unknown')) if motion=='unavailable' else 'sensor:head-read' if motion=='sensor' else 'ok'
+                condition=('unavailable:'+d.get('motion_reason','unknown')) if motion in ('unavailable','checking') else 'sensor:head-read' if motion=='sensor' else 'ok'
                 transition('motion',condition,'motion_issue','motion_recovered','ok')
                 # 正常冷却、触屏、开关操作不留为异常；已记录的异常只在正常点头后确认恢复。
-                if motion!='unavailable' and d.get('pet_result') in {'failed','stopped','skipped'} and d.get('pet_reason') in REASONS-{'none','settling','screen-touch','preference','disabled','cooldown','busy','release-required','too-short'}:
+                cleared_old_fault=bool(d.get('motion_fault_id') and d.get('motion_reason')=='none' and d.get('pet_result')=='failed' and d.get('pet_reason')==d.get('motion_fault_reason'))
+                if motion not in ('unavailable','checking') and not cleared_old_fault and d.get('pet_result') in {'failed','stopped','skipped'} and d.get('pet_reason') in REASONS-{'none','settling','screen-touch','preference','disabled','cooldown','busy','release-required','too-short'}:
                     transition('pet',d['pet_reason'],'pet_issue','pet_recovered','ok')
                 elif d.get('pet_result')=='completed':transition('pet','ok','pet_issue','pet_recovered','ok')
             for kind in changes:self._append(event_record(kind,safe,now))
@@ -203,6 +226,12 @@ def export_bundle(loc,state):
                          'at 和 created_at 为 Unix 时间（秒）。device_live=false 表示上次记录，不能当作当前设备状态。\n'
                          '从安装本版起留档；只记录 Mac 实际收到的异常。服务停止、Mac 睡眠、蓝牙断开期间无法完整观察机器人。\n'
                          '记录最多保留约 384 KiB，正常冷却和日常触摸不逐条记录；轮换或异常文件可能导致历史不完整。\n').encode()}
+    try:
+        last=json.loads(read_bounded(loc.runtime/'motion-last-fault.json',4096))
+        last_device=clean_device(last.get('device'));at=number(last.get('at'),high=1e12)
+        if last_device.get('motion_fault_id') and at is not None:
+            entries['last-motion-fault.json']=json.dumps({'schema':1,'at':at,'device':last_device},ensure_ascii=False).encode()
+    except (OSError,ValueError,TypeError):pass
     entries['SHA256SUMS.json']=json.dumps({name:hashlib.sha256(data).hexdigest() for name,data in entries.items()},indent=2).encode()
     destination=loc.root/'diagnostics';destination.mkdir(mode=0o700,exist_ok=True)
     if destination.is_symlink():raise ValueError('invalid_diagnostic_directory')

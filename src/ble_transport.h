@@ -85,8 +85,8 @@ public:
   rxSequence=seq;return true;
  }
  void reply(const String& message){
-  if(!attached||epoch.load()!=activeEpoch||!bound||message.length()>256||txSequence==UINT32_MAX)return;
-  uint8_t frame[281],nonce[12]={};size_t length=message.length(),body=length+20;frame[0]='W';frame[1]='G';frame[2]=1;frame[3]=body>>8;frame[4]=body;
+  if(!attached||epoch.load()!=activeEpoch||!bound||message.length()>512||txSequence==UINT32_MAX)return;
+  uint8_t frame[537],nonce[12]={};size_t length=message.length(),body=length+20;frame[0]='W';frame[1]='G';frame[2]=1;frame[3]=body>>8;frame[4]=body;
   seqBytes(++txSequence,frame+5);seqBytes(txSequence,nonce+8);
   mbedtls_gcm_context ctx;mbedtls_gcm_init(&ctx);mbedtls_gcm_setkey(&ctx,MBEDTLS_CIPHER_ID_AES,txKey,256);
   int ok=mbedtls_gcm_crypt_and_tag(&ctx,MBEDTLS_GCM_ENCRYPT,length,nonce,12,frame,9,reinterpret_cast<const uint8_t*>(message.c_str()),frame+9,16,frame+9+length);mbedtls_gcm_free(&ctx);

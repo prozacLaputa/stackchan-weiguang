@@ -13,6 +13,7 @@ struct Device: Codable {
     var firmware:String, page:String
     var wait_motion:Int?, done_motion:Int?, focus_motion:Int?
     var daily:Int?, away_rest:Int?, greeting:Int?, affection:Int?, skin:Int?
+    var motion_fault_id:Int?, motion_recoverable:Int?
     var motion_state:String?, motion_reason:String?, pet_result:String?, pet_reason:String?
     var pet_cooldown_ms:Int?, head_sensor:Int?, pet_event:Int?, pet_age:Int?, head_down:Int?
     var battery:Int, charging:Int, resting:Int, brightness:Int, light:Int, rest:Int, pet:Int, save_error:Int, uptime:Int, sync_age:Int
@@ -67,6 +68,7 @@ struct PetStatus {
         switch state {
         case "ready":return "可响应摸头"
         case "moving":return "正在动作"
+        case "checking":return "正在检查动作模块"
         case "cooldown":return "冷却中 · 约 \(((d.pet_cooldown_ms ?? 0)+999)/1000) 秒"
         case "disabled":return "点头已关闭"
         case "unavailable":return "动作暂不可用"
@@ -86,7 +88,10 @@ struct PetStatus {
     }
     static func detail(_ d:Device?,live:Bool)->String {
         guard live,let d=d else{return "连接恢复后再判断当前能否动作。"}
-        if d.motion_state == "unavailable" {return reason(d.motion_reason)+"。请先保留记录排查；反复摸头或切换开关不会重试。"}
+        if d.motion_state == "checking" {return "请移开手，让头部保持静止。检查过程不会点头。"}
+        if d.motion_state == "unavailable" {
+            return reason(d.motion_reason)+(d.motion_recoverable == 1 ? "。可尝试恢复动作；故障记录会保留。" : "。当前异常需保留记录并重启检查；切换开关不会重试。")
+        }
         if d.motion_state == "sensor" {return "头顶读数不可用，暂不触发动作；这不代表电机故障。"}
         let why=reason(d.pet_reason)
         return why.isEmpty ? "动作开关控制是否允许点头；下方规则决定何时执行。" : "最近一次："+why+"。"
@@ -139,7 +144,7 @@ struct PanelState: Codable {
     }
 }
 struct RecoveryReply:Decodable {var ok:Bool;var outcome:String;var state:PanelState?}
-struct ControlReply:Decodable {var ok:Bool;var error:String?;var device:Device?;var device_at:Double?;var companion:Companion?;var companion_at:Double?;var note:DeskNote?=nil;var note_at:Double?=nil}
+struct ControlReply:Decodable {var motion_result:String?=nil;var ok:Bool;var error:String?;var device:Device?;var device_at:Double?;var companion:Companion?;var companion_at:Double?;var note:DeskNote?=nil;var note_at:Double?=nil}
 struct DiagnosticReply:Decodable {var ok:Bool;var path:String?;var events:Int?}
 struct OpenTaskReply:Decodable {var ok:Bool;var error:String?;var thread_id:String?}
 
@@ -181,10 +186,10 @@ final class PanelModel:ObservableObject {
     var device:Device? {state?.bridge?.device}
     var companion:Companion? {state?.bridge?.companion}
     var note:DeskNote? {state?.bridge?.note}
-    var noteAvailable:Bool {available && ["0.46","0.47"].contains(device?.firmware ?? "") && state?.noteFresh()==true}
+    var noteAvailable:Bool {available && ["0.46","0.47","0.48"].contains(device?.firmware ?? "") && state?.noteFresh()==true}
     var noteConflict:Bool {noteDirty && noteBaseRevision != note?.revision}
     var noteStatus:String {
-        if let version=device?.firmware,!["0.46","0.47"].contains(version){return "连接 USB 更新后可用"}
+        if let version=device?.firmware,!["0.46","0.47","0.48"].contains(version){return "连接 USB 更新后可用"}
         guard noteAvailable,let n=note else{return "等待机器人同步 · 草稿可继续编辑"}
         if n.save_error==1{return "上次保存失败，原便签仍保留"}
         return n.state=="active" ? "已贴在机器人上" : n.state=="done" ? "已收起 · 可以重新贴上" : "还没有便签"
@@ -227,13 +232,13 @@ final class PanelModel:ObservableObject {
             self.refresh()
         }
     }
-    var focusAvailable:Bool {available && ["0.34","0.35","0.36","0.37","0.38","0.39","0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47"].contains(device?.firmware ?? "") && state?.companionFresh() == true}
+    var focusAvailable:Bool {available && ["0.34","0.35","0.36","0.37","0.38","0.39","0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48"].contains(device?.firmware ?? "") && state?.companionFresh() == true}
     var companionSettingsAvailable:Bool {available && device?.daily != nil && device?.away_rest != nil && device?.greeting != nil && device?.affection != nil}
     var focusRunning:Bool {companion?.focus_state == "running"}
     var focusPaused:Bool {companion?.focus_state == "paused"}
     var focusActive:Bool {focusRunning || focusPaused}
     var focusNextAvailable:Bool {focusAvailable && companion?.resting == true && companion?.focus_state == "done"}
-    var focusPauseAvailable:Bool {focusAvailable && ["0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47"].contains(device?.firmware ?? "")}
+    var focusPauseAvailable:Bool {focusAvailable && ["0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48"].contains(device?.firmware ?? "")}
     var focusSummaryTitle:String {
         guard state?.companionFresh() == true,let c=companion else{return "等待机器人同步"}
         guard let day=c.today_day else{return "更新固件后可记录"}
@@ -410,15 +415,40 @@ final class PanelModel:ObservableObject {
             else{self.state=nil;self.onTaskSnapshot?(nil);self.message="无法读取本机服务，请检查安装是否完整。";self.success=false}
         }
     }
+    var canRecoverMotion:Bool {
+        available && device?.motion_state == "unavailable" && device?.motion_recoverable == 1 && (device?.motion_fault_id ?? 0)>0
+    }
+    func recoverMotion(){
+        guard canRecoverMotion,let id=device?.motion_fault_id else{return}
+        issue(["action":"motion_recover","fault_id":id],saving:false)
+    }
+    static func motionRecoveryText(_ result:String)->String {
+        switch result {
+        case "recovered":return "动作已恢复，等 5 秒后可再次摸头。计时和设置保持不变，故障记录已保留。"
+        case "already-ready":return "动作已经可用，无需重复恢复。"
+        case "release-required","not-still":return "请移开手，让头部停稳后再点恢复；本次没有解除保护。"
+        case "cooldown":return "请稍等约 10 秒再试，避免连续检查。"
+        case "stale-fault":return "设备状态已变化，请等待最新状态后再试。"
+        case "check-timeout":return "检查未能及时完成，仍保持停用；请稍后再试。"
+        case "diagnostic-save-failed":return "故障记录未能保存，本次未恢复动作。请检查本机存储后再试。"
+        case "requires-reset":return "这类异常需要保留记录并重启检查，不能直接解除保护。"
+        case "connection-lost":return "连接已变化，检查已停止；不会在重连后补做。"
+        case "busy":return "设备正忙，请等当前动作或检查结束。"
+        default:return "检查未通过："+PetStatus.reason(result)+"。仍保持停用。"
+        }
+    }
     func issue(_ request:[String:Any],saving:Bool){
+        let motionRecovery=request["action"] as? String == "motion_recover"
         let focus=request["action"] as? String == "focus"
-        guard !busy else{return};busy=true;message=focus ? "等待机器人确认计时…" : saving ? "等待机器人保存…" : "正在检查连接与设备…";success=true
+        guard !busy else{return};busy=true;message=motionRecovery ? "正在保存故障并检查电机，请移开手…" : focus ? "等待机器人确认计时…" : saving ? "等待机器人保存…" : "正在检查连接与设备…";success=true
         let input=try? JSONSerialization.data(withJSONObject:request)
         run([root.appendingPathComponent("app/control.py").path],input:input){[weak self] result in
             guard let self=self else{return};self.busy=false
             if case .success(let data)=result,let reply=try? JSONDecoder().decode(ControlReply.self,from:data) {
                 self.success=reply.ok
-                if reply.ok {
+                if motionRecovery,let result=reply.motion_result {
+                    self.message=Self.motionRecoveryText(result)
+                }else if reply.ok {
                     if saving{self.dirty.removeAll()}
                     self.acceptReply(reply)
                     self.message=focus ? (["start":"机器人已开始专注计时。","stop":"已结束专注计时。","pause":"计时已暂停。","resume":"计时已继续。"][request["operation"] as? String ?? ""] ?? "计时已更新。") : saving ? "机器人已确认保存，重启后保留。" : "机器人已回复；下方显示各环节检查结果。"
@@ -653,7 +683,7 @@ struct PanelView:View {
                     switch page {
                     case .work:pendingCard;card {DeskExtrasView(model:model)};focusCard;noteCard
                     case .chat:card {VoiceCardView(voice:voice)}
-                    case .robot:card {LocalVisionCard(vision:vision,connected:model.state?.connected()==true && model.state?.bridge?.transport=="ble")};settingsCard;petCard
+                    case .robot:card {LocalVisionCard(vision:vision,connected:model.state?.connected()==true && model.state?.bridge?.transport=="ble")};petCard;settingsCard
                     case .connection:deviceCard;connectionCard
                     }
                 }.frame(maxWidth:.infinity,alignment:.topLeading).padding(24).padding(.top,-6)
@@ -746,7 +776,7 @@ struct PanelView:View {
                 else {Button("开始专注"){model.focus("start")}.buttonStyle(PanelActionStyle(prominent:true)).disabled(!model.focusAvailable || model.busy)}
             }
             DisclosureGroup("计时说明") {
-                Text(["0.44","0.45","0.46","0.47"].contains(model.device?.firmware ?? "") ? "专注到时自动休息 5 分钟，休息结束点下一轮。两段均可暂停；结束取消整个循环。机器人重启只清除当前计时。" : "静音计时，关闭控制台或短暂断连仍会继续；机器人重启后清除。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
+                Text(["0.44","0.45","0.46","0.47","0.48"].contains(model.device?.firmware ?? "") ? "专注到时自动休息 5 分钟，休息结束点下一轮。两段均可暂停；结束取消整个循环。机器人重启只清除当前计时。" : "静音计时，关闭控制台或短暂断连仍会继续；机器人重启后清除。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
                 Text("今日专注按 Mac 的本地日期累计；完成一轮才计入轮数，提前结束也累计已专注的时间，暂停和休息时间不计入。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true).padding(.top,6)
             }.font(.system(size:11)).tint(quiet)
             Divider().overlay(Color.white.opacity(0.07))
@@ -779,6 +809,21 @@ struct PanelView:View {
     }
     private var petCard:some View {
         card {
+            if live && (d?.motion_state == "unavailable" || d?.motion_state == "checking") {
+                HStack(spacing:14) {
+                    VStack(alignment:.leading,spacing:5) {
+                        Text(PetStatus.title(d,live:live)).font(.system(size:14,weight:.semibold)).foregroundColor(.orange)
+                        Text(PetStatus.detail(d,live:live)).font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
+                    }
+                    Spacer(minLength:0)
+                    if d?.motion_recoverable == 1 || d?.motion_state == "checking" {
+                        Button(model.busy || d?.motion_state == "checking" ? "检查中…" : "恢复动作"){model.recoverMotion()}
+                            .buttonStyle(.bordered).disabled(model.busy || !model.canRecoverMotion)
+                    }
+                }
+                Text("通过蓝牙检查，不重启、不试点头；恢复前先保存故障记录。").font(.system(size:10)).foregroundColor(quiet)
+                Divider()
+            }
             PanelFold("摸头与动作状态",summary:PetStatus.title(d,live:live),icon:"hand.raised") {
                 Text(PetStatus.title(d,live:live)).font(.system(size:15,weight:.medium)).foregroundColor(live && d?.motion_state != "unavailable" && d?.motion_state != "sensor" ? accent:.orange)
                 Text(PetStatus.latest(d,live:live)).font(.system(size:12)).fixedSize(horizontal:false,vertical:true)
@@ -935,7 +980,12 @@ final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
     func installMenus() {
         let main=NSMenu(),root=NSMenuItem();main.addItem(root)
         let application=NSMenu();root.submenu=application
+        let about=NSMenuItem(title:"关于微光控制台",action:#selector(showAbout),keyEquivalent:"");about.target=self;application.addItem(about)
+        application.addItem(.separator())
+        let show=NSMenuItem(title:"显示控制台",action:#selector(showPanel),keyEquivalent:"0");show.target=self;application.addItem(show)
         let voiceEntry=NSMenuItem(title:"开始／结束语音",action:#selector(toggleVoice),keyEquivalent:"");voiceEntry.target=self;application.addItem(voiceEntry)
+        application.addItem(.separator())
+        application.addItem(NSMenuItem(title:"隐藏微光控制台",action:#selector(NSApplication.hide(_:)),keyEquivalent:"h"))
         application.addItem(.separator())
         let quit=NSMenuItem(title:"退出微光",action:#selector(quitApp),keyEquivalent:"q");quit.target=self;application.addItem(quit)
         let editRoot=NSMenuItem(title:"编辑",action:nil,keyEquivalent:"");main.addItem(editRoot)
@@ -943,6 +993,11 @@ final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
         for (title,action,key) in [("撤销","undo:","z"),("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {
             edit.addItem(NSMenuItem(title:title,action:NSSelectorFromString(action),keyEquivalent:key))
         }
+        let windowRoot=NSMenuItem(title:"窗口",action:nil,keyEquivalent:"");main.addItem(windowRoot)
+        let windows=NSMenu(title:"窗口");windowRoot.submenu=windows
+        windows.addItem(NSMenuItem(title:"最小化",action:#selector(NSWindow.performMiniaturize(_:)),keyEquivalent:"m"))
+        windows.addItem(NSMenuItem(title:"关闭窗口",action:#selector(NSWindow.performClose(_:)),keyEquivalent:"w"))
+        NSApp.windowsMenu=windows
         NSApp.mainMenu=main
         let item=NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength)
         item.button?.image=NSImage(systemSymbolName:"waveform",accessibilityDescription:"微光")
@@ -955,6 +1010,7 @@ final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
         let exit=NSMenuItem(title:"退出微光",action:#selector(quitApp),keyEquivalent:"");exit.target=self;menu.addItem(exit)
         item.menu=menu;statusItem=item
     }
+    @objc func showAbout(){NSApp.orderFrontStandardAboutPanel(options:[.applicationName:"微光控制台",.credits:NSAttributedString(string:"Chan 的桌面伙伴\n关闭窗口后仍可从菜单栏打开；退出控制台不停止机器人任务同步。")])}
     @objc func showPanel(){window?.deminiaturize(nil);window?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
     func openVoicePanel() {
         if voicePanel == nil {
@@ -1094,6 +1150,13 @@ final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
             precondition(PetStatus.title(petDevice,live:false).contains("不可判断"))
             precondition(PetStatus.latest(petDevice,live:false).contains("上次记录"))
             precondition(PetStatus.title(d,live:true).contains("尚无动作反馈"))
+            var recoveryState=synced;petDevice.motion_state="unavailable";petDevice.firmware="0.48";petDevice.motion_recoverable=1;petDevice.motion_fault_id=123
+            recoveryState.bridge?.device=petDevice;recoveryState.bridge?.device_at=Date().timeIntervalSince1970
+            let recovering=PanelModel();recovering.accept(recoveryState);precondition(recovering.canRecoverMotion)
+            recoveryState.bridge?.device_at=Date().timeIntervalSince1970-60;let staleRecovery=PanelModel();staleRecovery.accept(recoveryState);precondition(!staleRecovery.canRecoverMotion)
+            petDevice.motion_state="checking";precondition(PetStatus.title(petDevice,live:true).contains("正在检查"))
+            precondition(PanelModel.motionRecoveryText("recovered").contains("故障记录已保留"))
+            precondition(PanelModel.motionRecoveryText("load-high").contains("仍保持停用"))
             let exportRoot=URL(fileURLWithPath:"/tmp/Weiguang")
             precondition(PanelModel.diagnosticFile("/tmp/Weiguang/diagnostics/微光-诊断-20261010-test.zip",root:exportRoot) != nil)
             precondition(PanelModel.diagnosticFile("/tmp/Weiguang/diagnostics/../../other.zip",root:exportRoot) == nil)

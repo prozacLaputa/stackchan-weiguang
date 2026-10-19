@@ -205,13 +205,19 @@ def install(loc, args):
     shutil.copy2(native,bundle/'MacOS/WeiguangBluetooth')
     (bundle/'MacOS/WeiguangBluetooth').chmod(0o755)
     shutil.copy2(PROJECT/'macos/Info.plist',bundle/'Info.plist')
-    panel_bundle=loc.root/'微光控制台.app/Contents'
+    # 正式安装保留旧路径兼容链接；更新实际应用，避免重新生成第二份控制台。
+    panel_path=(loc.root/'微光控制台.app').resolve()
+    if (loc.root/'微光控制台.app').is_symlink() and panel_path not in (
+            Path('/Applications/微光控制台.app'),loc.home/'Applications/微光控制台.app'):
+        raise RuntimeError('控制台链接不指向受支持的应用目录，未覆盖。')
+    panel_bundle=panel_path/'Contents'
     (panel_bundle/'MacOS').mkdir(parents=True,exist_ok=True)
     shutil.copy2(panel,panel_bundle/'MacOS/WeiguangPanel')
     (panel_bundle/'MacOS/WeiguangPanel').chmod(0o755)
     shutil.copy2(PROJECT/'macos/PanelInfo.plist',panel_bundle/'Info.plist')
     (panel_bundle/'Resources').mkdir(exist_ok=True)
     shutil.copy2(PROJECT/'macos/Weiguang.icns',panel_bundle/'Resources/Weiguang.icns')
+    subprocess.run(['codesign','--force','--sign','-','--identifier',LABEL+'.panel',str(panel_path)],check=True)
     app = loc.root/'app'
     app.mkdir(exist_ok=True)
     for filename in APP_FILES:
@@ -328,11 +334,11 @@ def export_package(destination, include_backup=False):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
         raise RuntimeError('导出目标已存在，请换一个文件名。')
-    paths = [PROJECT/'weiguang', PROJECT/'DAILY_USE.md', PROJECT/'MIGRATION.md', PROJECT/'VISUAL_INTERACTION.md']
+    paths = [PROJECT/'weiguang', PROJECT/'DAILY_USE.md', PROJECT/'MIGRATION.md', PROJECT/'VISUAL_INTERACTION.md', PROJECT/'LOCAL_APP_INSTALL.md']
     paths += [PROJECT/'bridge'/name for name in APP_FILES]
     paths += list((PROJECT/'controls').glob('*.command'))
     # 仅源码与说明；语音身份、获准耳机UID和本机路径均不进入迁移包。
-    paths += [PROJECT/'macos/setup_voice.py',PROJECT/'bridge/voice-requirements.txt',PROJECT/'bridge/factory_voice_client.py',PROJECT/'bridge/voice_commands.py',PROJECT/'bridge/vision_camera.py',PROJECT/'HEADPHONES_VOICE_SETUP.md']
+    paths += [PROJECT/'macos/setup_voice.py',PROJECT/'macos/install_desktop.py',PROJECT/'bridge/voice-requirements.txt',PROJECT/'bridge/factory_voice_client.py',PROJECT/'bridge/voice_commands.py',PROJECT/'bridge/vision_camera.py',PROJECT/'HEADPHONES_VOICE_SETUP.md']
     paths += [PROJECT/'checks'/name for name in ('factory_voice_identity.py','factory_voice_probe.py')]
     paths += [PROJECT/'macos'/name for name in ('WeiguangBluetooth','Info.plist','WeiguangBluetooth.swift','build.py','WeiguangPanel','PanelInfo.plist','WeiguangPanel.swift','AirPodsAudio.swift','VoiceCompanion.swift','VoiceViews.swift','VoiceGreeting.swift','VoiceConversation.swift','VoiceFace.swift','VoiceMicrophone.swift','VoiceMode.swift','VoiceTaskNotice.swift','VoiceCommands.swift','VoiceHotkey.swift','LocalVision.swift','DeskExtras.swift','build_panel.py','Weiguang.icns','Weiguang.png','draw_icon.swift','build_icon.py')]
     # 新电脑通过 USB 重新绑定；不导出当前机器的 ble.key 或蓝牙权限。

@@ -13,6 +13,8 @@ ROOT=Path(__file__).resolve().parent.parent
 
 def main():
     target=Path.home()/'Library/Application Support/Weiguang'
+    if (target/'desktop-install.json').exists():
+        raise RuntimeError('desktop_installation_present_use_install_desktop_py')
     binary=target/'微光控制台.app/Contents/MacOS/WeiguangPanel'
     config=target/'voice-runtime.json'
     python=ROOT/'.venv/bin/python'

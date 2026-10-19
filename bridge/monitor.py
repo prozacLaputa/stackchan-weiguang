@@ -13,6 +13,9 @@ from waiting_reason import clean_reason, summarize_question
 from completion_summary import summarize_completion
 from task_progress import ProgressTracker
 
+# 让紧邻的排队续轮先到达；完成提醒只在主会话确实停下后发布。
+COMPLETION_SETTLE_SECONDS = 1.0
+
 class Tracker:
     def __init__(self):
         self.state = 'unknown'
@@ -115,6 +118,7 @@ class Tracker:
         kind, turn = p.get('type'), p.get('turn_id')
         if kind == 'task_started':
             self.turn, self.state = turn, 'running'
+            self.completed_key, self.completed_at = '', 0
             self.questions.clear()
             self.final_candidate = self.result_hint = ''
             self.progress.reset()
@@ -123,14 +127,21 @@ class Tracker:
                 self.expression.reset()
         elif turn == self.turn or self.turn is None:
             if kind == 'task_complete':
+                # 重复落盘不产生新的完成事件；已中断的轮次也不补报成功。
+                if self.state in ('done', 'interrupted'):
+                    return
+                self.turn = turn
                 self.state = 'done'
                 self.progress.reset()
                 self.result_hint = summarize_completion(p.get('last_agent_message') or self.final_candidate)
                 self.final_candidate = ''
-                self.completed_key = hashlib.sha256(f'{turn}:{stamp}'.encode()).hexdigest()[:16]
+                # 等用户回应与完成互斥；后来回答问题也不补播旧完成。
+                pending = any(q['accepted'] and q['remaining'] for q in self.questions.values())
+                self.completed_key = '' if pending else hashlib.sha256(f'{turn}:{stamp}'.encode()).hexdigest()[:16]
                 self.completed_at = self.last_event
             elif kind == 'turn_aborted':
                 self.state = 'interrupted'
+                self.completed_key, self.completed_at = '', 0
                 self.progress.reset()
                 self.final_candidate = self.result_hint = ''
                 self.questions.clear()
@@ -149,7 +160,8 @@ class Tracker:
         pending = sorted(call for call, q in self.questions.items() if q['accepted'] and q['remaining'])
         waiting = self.wait_key if pending else ''
         # 旧完成记录只显示状态，不在恢复连接时补播成新提醒。
-        completed = self.completed_key if 0 <= now - self.completed_at <= 30 else ''
+        completed = self.completed_key if (self.current(now) == 'done'
+                    and COMPLETION_SETTLE_SECONDS <= now - self.completed_at <= 30) else ''
         return completed, waiting
 
     def waiting_reason(self):
@@ -203,9 +215,27 @@ def packet(seq, state, title):
     title = ' '.join(title.split())[:60]
     return f'SC1\t{seq}\t{state}\t{title}\n'.encode('utf-8')
 
+def main_session_source(source, thread_source):
+    """旧版子代理路径并不完整；审批代理也可能没有 agent_path。"""
+    if thread_source in ('subagent', 'guardian_review'):
+        return False
+    if source is None or source == '':
+        return True  # 较旧数据库没有来源字段，仍保留既有路径筛选。
+    if not isinstance(source, str):
+        return False
+    source = source.strip()
+    # Codex 的结构化 source 是内部代理来源；损坏的结构化元数据也不冒充主会话。
+    return not (source.startswith(('{', '[')) or source.lower() in ('subagent', 'guardian', 'guardian_review'))
+
+
 def recent_tasks(db, preferred):
     with closing(sqlite3.connect(Path(db).resolve().as_uri() + '?mode=ro', uri=True, timeout=2)) as conn:
-        rows = conn.execute("SELECT id, rollout_path, COALESCE(NULLIF(name,''),title), updated_at FROM threads WHERE archived=0 AND agent_path IS NULL ORDER BY updated_at DESC, id ASC LIMIT 24").fetchall()
+        columns = {r[1] for r in conn.execute('PRAGMA table_info(threads)')}
+        source = 'source' if 'source' in columns else 'NULL'
+        thread_source = 'thread_source' if 'thread_source' in columns else 'NULL'
+        conn.create_function('weiguang_main_session', 2, main_session_source)
+        # 必须先过滤再 LIMIT，避免后台检查挤掉真正活跃的主会话。
+        rows = conn.execute(f"SELECT id, rollout_path, COALESCE(NULLIF(name,''),title), updated_at FROM threads WHERE archived=0 AND agent_path IS NULL AND weiguang_main_session({source},{thread_source}) ORDER BY updated_at DESC, id ASC LIMIT 24").fetchall()
     return rows
 
 def choose_tasks(tasks, preferred, limit=8):

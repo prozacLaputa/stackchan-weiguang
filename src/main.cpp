@@ -20,6 +20,7 @@
 #include "rest_ritual.h"
 #include "cat_skin.h"
 #include "desktop_actions.h"
+#include "task_navigation.h"
 #include "focus_dial.h"
 #include "focus_waiting.h"
 #include "focus_summary.h"
@@ -27,6 +28,7 @@
 #include "local_camera.h"
 #include "visual_face.h"
 #include "desk_extras.h"
+#include "fonts/home_sans.h"
 DeskExtras desk;
 int pressedExtraPage=0,pressedExtraEntry=0,pressedExtraButton=0;
 bool extraHoldFired=false;std::string extraPressTarget,extraPressKey;uint32_t extraPressToken=0;
@@ -74,7 +76,11 @@ String focusSummaryText(){
 StickyNote stickyNote;StickyNotePress stickyPress;bool noteSaveFailed=false;
 bool noteVisible(){
  if(!stickyNote.active())return false;
- if(syncState.live())for(const auto& task:ui.tasks)if(task.state=="needs_input")return false;
+ if(syncState.live()){
+  // 新完成只在原有 6 秒提示期让出便签，未读标记不会一直挡住纸条。
+  if(ui.celebrating)return false;
+  for(const auto& task:ui.tasks)if(task.state=="needs_input")return false;
+ }
  return true;
 }
 bool persistNote(const StickyNote& next){
@@ -88,13 +94,11 @@ int focusMinutes=25;FocusHit pressedFocus=FocusHit::none;
 FocusTimer::Phase pressedFocusPhase=FocusTimer::off;FocusCycle::Stage pressedFocusStage=FocusCycle::work;
 FocusPresentation focusPresentation;bool pressedFocusControls=false,pressedHomeFocus=false;uint32_t handledFocusCompletion=0,handledStageCompletion=0;
 FocusWaitingPress focusWaitingPress;bool focusActionFeedback=false;
-WaitingPress waitingPress;
-const Task* waitingTask(){
- if(!syncState.live()||ui.tasks.empty()||ui.tasks[ui.currentIndex].state!="needs_input")return nullptr;
- return &ui.tasks[ui.currentIndex];
-}
+TaskPress homePress,listPress;int listTouchX=0,listTouchY=0;
+const Task* homeTask(){return homeTaskTarget(ui,syncState.live());}
 void observeDesktopPresses(){
- waitingPress.observe(waitingTask(),desktopAction.armed&&!ui.details&&!settingsOpen&&!focusOpen);
+ homePress.observe(homeTask(),desktopAction.armed&&!ui.details&&!settingsOpen&&!focusOpen&&!desk.page&&!noteVisible());
+ listPress.observe(listTaskTarget(ui,syncState.live(),listTouchX,listTouchY),desktopAction.armed&&ui.details&&!settingsOpen&&!focusOpen&&!desk.page);
  focusWaitingPress.observe(focusWaitingTarget(ui.tasks,syncState.live(),ui.currentIndex).task,
   desktopAction.armed&&focusOpen&&pressedFocusPhase==companion.focus.phase&&pressedFocusStage==companion.focus.stage);
 }
@@ -208,7 +212,8 @@ void prepareTaskTitles(){
 }
 void drawTaskRow(M5Canvas& target,int i,int x,int y,int width){
  const auto& t=ui.tasks[i];uint16_t c=syncState.live()?color(t.state):MUTED;
- target.setFont(&fonts::efontCN_16);target.fillCircle(x+7,y+14,3,c);
+ target.drawRoundRect(x,y+TaskRow::cardTop,width,TaskRow::cardHeight,8,0x3186);
+ target.setFont(&fonts::efontCN_16);target.fillCircle(x+8,y+16,3,c);
  target.setTextColor(FACE_INK,BG);
  for(int l=0;l<std::min(2,int(titleLines[i].size()));l++){
   target.setCursor(x+20,y+TaskRow::titleTop+l*TaskRow::lineHeight);target.print(titleLines[i][l].c_str());
@@ -220,7 +225,7 @@ void drawTaskRow(M5Canvas& target,int i,int x,int y,int width){
  if(!reason.empty())status=fitTaskHint(reason,width-26-suffixWidth,[&](const std::string& s){return target.textWidth(s.c_str());}).c_str();
  if(unread)status+=" · 新";
  target.setTextColor(c,BG);target.setCursor(x+20,y+TaskRow::statusTop);target.print(status);
- target.drawFastHLine(x+4,y+TaskRow::height-4,width-14,0x2104);
+
 }
 void rebuildTaskCache(){
  if(!cacheDirty)return;
@@ -266,7 +271,7 @@ FaceMood selectedFace(uint32_t now){
  return base;
 }
 void drawFace(uint32_t now){
- int w=canvas.width(),h=canvas.height();int faceBottom=h-74;
+ int w=canvas.width(),h=canvas.height();int faceBottom=h-78;
  int cx=w/2,cy=(32+faceBottom)/2;
  // 保持已认可的无瞳孔五官、宽眼距和小微笑；用相同轮廓平滑变化。
  auto mood=selectedFace(now);
@@ -340,31 +345,26 @@ void notePaper(int w){
  canvas.drawLine(right-fold,bottom-fold,right-fold,bottom,canvas.color565(206,169,85));
  canvas.drawLine(right-fold,bottom-fold,right,bottom-fold,canvas.color565(240,207,124));
 }
+// 常显与待回应共用整块状态卡；主状态占整行，不再拆成两列小标签。
+void homeStatusLine(const String& value,int y,const lgfx::IFont* font,uint16_t ink,int height){
+ const int left=24,available=canvas.width()-48;
+ canvas.setFont(font);canvas.setTextSize(1);
+ // 两行都按原生字号绘制；长提示省略，不缩放点阵，避免笔画粗细不均。
+ String fitted=fitTaskHint(value.c_str(),available,[](const std::string& s){return canvas.textWidth(s.c_str());}).c_str();
+ int width=canvas.textWidth(fitted);
+ canvas.setClipRect(left,y,available,height);
+ text(fitted,(canvas.width()-width)/2,y,ink,font);
+ canvas.clearClipRect();canvas.setTextSize(1);
+}
 void home(uint32_t now){
  int w=canvas.width(),h=canvas.height();drawFace(now);
  if(desk.recapLive(now)&&syncState.live()){canvas.drawRoundRect(12,28,100,24,7,0x77D5);text(String("接力 ")+desk.rows.size(),28,31,0x77D5);}
  if(desk.musicLive(now)){canvas.drawRoundRect(116,28,108,24,7,0x3186);text("音乐",154,31,ACCENT);}
-
  canvas.drawRoundRect(228,28,80,34,7,0x3186);
  text(companion.focus.phase==FocusTimer::running?(companion.focus.resting()?"休息中":"专注中"):companion.focus.phase==FocusTimer::paused?"已暂停":companion.focus.phase==FocusTimer::done?"下一轮":"番茄钟",244,37,ACCENT);
- int active=0,waiting=0;for(const auto&t:ui.tasks){if(t.state=="running")active++;if(t.state=="needs_input")waiting++;}
- String summary=!connected?(syncState.ever?"同步已中断":"等待 Mac 同步"):!syncState.available?"任务数据暂不可读":String("进行中 ")+active+"  ·  任务 "+ui.tasks.size();
- uint16_t summaryColor=syncState.live()?ACCENT:MUTED;
- if(syncState.live()&&waiting){
-  uint16_t amber=0xFD6B;
-  canvas.drawRoundRect(12,142,w-24,94,9,amber);
-  canvas.fillCircle(28,159,3,amber);
-  text(String("待回应 ")+waiting+" · 长按打开 Codex",40,151,amber);
-  if(!ui.tasks.empty())cropped(ui.tasks[ui.currentIndex].title.c_str(),26,176,w-52,&fonts::efontCN_16);
-  String hint="按住约 1 秒即可打开";
-  if(!ui.tasks.empty()&&!ui.tasks[ui.currentIndex].waitReason.empty())hint=fitTaskHint(ui.tasks[ui.currentIndex].waitReason,w-52,[](const std::string& str){return canvas.textWidth(str.c_str());}).c_str();
-  if(waitingPress.captured&&gesture.active){
-   uint32_t held=now-gesture.startAt;
-   hint=waitingPress.fired?(*desktopAction.feedback(now)?desktopAction.feedback(now):"已发送打开请求"):waitingPress.canceled?"已取消 · 松手重试":"继续按住，打开 Codex";
-   if(!waitingPress.canceled)canvas.fillRoundRect(26,226,int((w-52)*std::min(1.0f,held/900.0f)),3,1,amber);
-  }else if(desktopAction.feedback(now)[0])hint=desktopAction.feedback(now);
-  text(hint,26,202,amber);return;
- }else if(noteVisible()){
+ int active=0,waiting=0,unknown=0;for(const auto&t:ui.tasks){if(t.state=="running")active++;if(t.state=="needs_input")waiting++;if(t.state=="unknown")unknown++;}
+ bool live=syncState.live(),needsReply=live&&waiting>0;
+ if(!needsReply&&noteVisible()){
   notePaper(w);
   const uint16_t ink=canvas.color565(72,51,26),muted=canvas.color565(117,83,37);
   auto paperText=[&](const String& s,int x,int y,uint16_t color){
@@ -387,44 +387,56 @@ void home(uint32_t now){
    row+=glyph;
   }
   paperText(row,26,y,ink);return;
- }else if(syncState.live()&&ui.celebrating){
-  summary=String("本轮结束 · ")+ui.completedCount+" 项";summaryColor=0x77D5;
-  canvas.drawRoundRect(50,h-70,w-100,26,7,summaryColor);
+
+ }
+ const int top=h-98; // 保留待回应原有 296×94px 占比及整块长按区域。
+ String headline=String("进行中 · ")+active+" 项";
+ uint16_t headlineInk=ACCENT;
+ if(!live){headline=!connected?(syncState.ever?"同步已中断":"等待 Mac 同步"):"任务数据暂不可读";headlineInk=0xBDF7;}
+ else if(needsReply){headline=String("待回应 · ")+waiting+" 项";headlineInk=0xFD6B;}
+ else if(ui.celebrating){headline=String("本轮结束 · ")+ui.completedCount+" 项";headlineInk=0x77D5;}
+ else if(!active&&unknown){headline="状态待确认";headlineInk=0xBDF7;}
+ else if(!active&&ui.unread.count()){headline=String("新完成 · ")+ui.unread.count()+" 项";headlineInk=0x77D5;}
+ else if(ui.tasks.empty())headline="暂无任务";
+ else if(!active)headline="待命中";
+ // 完整彩色描边保持常显状态醒目；两行文字之间保留呼吸空间。
+ canvas.drawRoundRect(12,top,w-24,94,9,headlineInk);
+ canvas.drawRoundRect(13,top+1,w-26,92,8,headlineInk);
+ // 主屏只保留状态与辅助提示两行，会话标题统一到列表查看。
+ homeStatusLine(headline,top+12,&HomeSans::status30,headlineInk,36);
+ String hint=String("共 ")+ui.tasks.size()+(homeTask()?" 项 · 按住打开":" 项 · 轻点查看");
+ uint16_t hintInk=0xBDF7;
+ if(needsReply){
+  hint=String("长按打开 Codex · 共 ")+ui.tasks.size()+" 项";hintInk=headlineInk;
+
+ }else if(live&&ui.celebrating){
+  hintInk=0x77D5;
+ }else if(live&&ui.unread.count()){
+  // 完成信息优先于主屏计时／休息提示；大标题已显示数量时不重复。
+  if(active)hint=String("新完成 ")+ui.unread.count()+" 项 · 共 "+ui.tasks.size()+" 项";
  }else if(companion.focus.finished(now)){
-  summary=companion.focus.phase==FocusTimer::done?"休息结束 · 可开始下一轮":"专注结束 · 休息五分钟";summaryColor=0x77D5;
+  hint=companion.focus.phase==FocusTimer::done?"休息结束 · 可开始下一轮":"专注结束 · 休息五分钟";hintInk=0x77D5;
  }else if(companion.welcome(now)){
-  summary=desk.recapLive(now)?String("回来啦 · ")+desk.rows.size()+" 项进展待看":"回来啦";summaryColor=ACCENT;
- }else if(settings.awayRest&&companion.away(now)&&standby.resting()){
-  summary="离席休息";summaryColor=MUTED;
+  hint=desk.recapLive(now)?String("回来啦 · ")+desk.rows.size()+" 项进展待看":"回来啦";hintInk=ACCENT;
  }else if(companion.focus.active()){
-  auto left=companion.focus.remaining(now);char countdown[40];snprintf(countdown,sizeof(countdown),"%s %02u:%02u · 进行中 %d",companion.focus.resting()?"休息":"专注",unsigned(left/60),unsigned(left%60),active);
-  summary=companion.focus.phase==FocusTimer::paused?String(companion.focus.resting()?"休息已暂停 · ":"专注已暂停 · ")+left/60+" 分钟":String(countdown);summaryColor=ACCENT;
+  auto left=companion.focus.remaining(now);char countdown[48];
+  snprintf(countdown,sizeof(countdown),"%s %02u:%02u · %s",companion.focus.resting()?"休息":"专注",unsigned(left/60),unsigned(left%60),companion.focus.phase==FocusTimer::paused?"已暂停":"计时中");
+  hint=countdown;hintInk=ACCENT;
+ }else if(standby.resting())hint=settings.awayRest&&companion.away(now)?"离席休息 · 轻触唤醒":"休息中 · 轻触唤醒";
+ if(!live){
+  hint=!connected?(syncState.ever?"同步已中断":"等待 Mac 同步"):"任务数据暂不可读";
+  if(syncState.goodSeconds>=0){char stamp[24];snprintf(stamp,sizeof(stamp)," · %02d:%02d",syncState.goodSeconds/3600,syncState.goodSeconds/60%60);hint+=syncState.age(now)>=86400?" · 超过一天":stamp;}
+ }else if(unknown&&!needsReply&&!ui.celebrating){
+  hint=String(unknown)+" 项状态待确认 · 共 "+ui.tasks.size()+" 项";
  }
- centered(summary,h-64,summaryColor);
- if(ui.tasks.empty())centered(connected?"暂无任务":"等待 Mac 连接",h-40,MUTED);
- else{
-  String name=ui.tasks[ui.currentIndex].title.c_str();int left=16,available=w-32;canvas.setFont(&fonts::efontCN_16);
-  int width=canvas.textWidth(name),offset=0;
-  if(width>available){int cycle=width-available+80;offset=std::min(width-available,std::max(0,(int)((now-ui.currentSince)/60%cycle)-40));}
-  canvas.setClipRect(left,h-41,available,20);text(name,left-offset,h-41);canvas.clearClipRect();
+ if(homePress.captured&&gesture.active){
+  uint32_t held=now-gesture.startAt;
+  hint=homePress.fired?"已发送打开请求":homePress.canceled?"已取消 · 松手重试":String("打开 · ")+homePress.title.c_str();
+  if(!homePress.canceled)canvas.fillRoundRect(26,top+89,int((w-52)*std::min(1.0f,held/float(TaskPress::holdMs))),3,1,headlineInk);
  }
- String hint="轻点查看任务";
- if(!ui.tasks.empty())hint=(syncState.live()?label(ui.tasks[ui.currentIndex].state):syncState.linked?"状态未知":"离线快照")+" · "+"轻点查看";
- if(syncState.live()&&waiting)hint="回 Codex 回应 · 轻点查看";
- if(syncState.live()&&ui.unread.count())hint=String("新完成 ")+ui.unread.count()+" 项 · 轻点查看";
- std::string reason=ui.tasks.empty()?"":taskHint(ui.tasks[ui.currentIndex],syncState.live());
- if(!reason.empty())hint=fitTaskHint(reason,w-32,[](const std::string& s){return canvas.textWidth(s.c_str());}).c_str();
- if(standby.resting())hint="休息中 · 轻触唤醒";
- if(!syncState.live()){
-  if(syncState.goodSeconds>=0){char stamp[24];snprintf(stamp,sizeof(stamp),"上次同步 %02d:%02d",syncState.goodSeconds/3600,syncState.goodSeconds/60%60);hint=stamp;if(syncState.age(now)>=86400)hint+=" · 超过一天";}
-  else hint="尚未收到有效任务数据";
- }
- if(desktopAction.feedback(now)[0]){hint=desktopAction.feedback(now);reason="";}
- if(homeProgress.index>=0&&!ui.tasks.empty()&&homeProgress.index==ui.currentIndex&&syncState.live()&&!standby.resting()&&ui.tasks[ui.currentIndex].state=="running"&&homeProgress.key==ui.tasks[ui.currentIndex].id+"\n"+ui.tasks[ui.currentIndex].progressHint){
-  canvas.setClipRect(16,h-19,w-32,18);
-  text(ui.tasks[ui.currentIndex].progressHint.c_str(),16-homeProgress.offset,h-19,ACCENT);
-  canvas.clearClipRect();
- }else centered(hint,h-19,!reason.empty()&&!standby.resting()?(waiting?0xFD6B:!ui.tasks.empty()&&ui.tasks[ui.currentIndex].state=="running"?ACCENT:0x77D5):syncState.live()&&ui.unread.count()&&!standby.resting()?0x77D5:MUTED);
+ if(desktopAction.feedback(now)[0])hint=desktopAction.feedback(now);
+ // 与顶部「番茄钟」按钮一致的原生细字，保持原两行布局的视觉中心。
+ homeStatusLine(hint,top+63,&fonts::efontCN_16,hintInk,16);
 }
 void details(uint32_t now,bool header){
  int w=canvas.width(),h=canvas.height();
@@ -460,6 +472,22 @@ void details(uint32_t now,bool header){
   // 只覆盖状态行，保留标题、分隔线和滚动条；不重建任务缓存。
   canvas.setClipRect(32,y,w-52,18);canvas.fillRect(32,y,w-52,18,BG);
   text(ui.tasks[progress].progressHint.c_str(),32-listProgress.offset,y,ACCENT);
+  canvas.clearClipRect();
+ }
+ // 按住反馈叠在缓存卡片上，滑动／换项立即取消，不改变列表位置。
+ for(int i=0;i<int(ui.tasks.size());i++){
+  const auto& task=ui.tasks[i];bool held=gesture.active&&listPress.captured&&listPress.id==task.id;
+  const char* feedback=desktopAction.thread==task.id?desktopAction.feedback(now):"";
+  if(!held&&!*feedback)continue;
+  int y=layout.rowsTop()+i*layout.rowHeight()-offset;
+  if(y+TaskRow::cardTop+TaskRow::cardHeight<=layout.rowsTop()||y>=layout.rowsBottom())continue;
+  uint16_t ink=syncState.live()?color(task.state):MUTED;
+  canvas.setClipRect(12,layout.rowsTop(),w-26,layout.viewportHeight());
+  canvas.drawRoundRect(12,y+TaskRow::cardTop,w-26,TaskRow::cardHeight,8,ink);
+  canvas.fillRect(32,y+TaskRow::statusTop,w-54,18,BG);
+  const char* cue=*feedback?feedback:listPress.canceled?"已取消 · 松手重试":listPress.fired?"已发送打开请求":"按住打开 Codex…";
+  text(cue,32,y+TaskRow::statusTop,ink);
+  if(held&&!listPress.canceled)canvas.fillRoundRect(26,y+TaskRow::cardTop+TaskRow::cardHeight-5,int((w-54)*std::min(1.0f,uint32_t(now-gesture.startAt)/float(TaskPress::holdMs))),2,1,ink);
   canvas.clearClipRect();
  }
  if(ui.tasks.empty())centered("暂无任务",h/2,MUTED);
@@ -537,7 +565,7 @@ void drawFocus(uint32_t now){
   if(gesture.active&&focusWaitingPress.captured){
    uint32_t held=now-gesture.startAt;
    centered(focusWaitingPress.fired?(*feedback?feedback:"已发送打开请求"):focusWaitingPress.canceled?"已取消 · 松手重试":"继续按住…",13,amber);
-   if(!focusWaitingPress.canceled)canvas.fillRect(24,35,int(272*std::min(1.0f,held/900.0f)),2,amber);
+   if(!focusWaitingPress.canceled)canvas.fillRect(24,35,int(272*std::min(1.0f,held/float(WaitingPress::holdMs))),2,amber);
   }else if(*feedback)centered(feedback,13,amber);
   else{
    canvas.fillCircle(25,21,3,amber);text(String("待回应 ")+waiting.count,35,13,amber);
@@ -653,7 +681,7 @@ void inspectProximityStandby(){
 void reply(const String& message,SyncTransport via){if(via==SyncTransport::ble)ble.reply(message+"\n");else Serial.println(message);}
 void deviceReport(const String& seq,SyncTransport via){
  String page=focusOpen?"focus":settingsOpen?"settings":ui.details?"list":"home";
- String report="DEVICE\t"+seq+"\t0.48\t"+String(battery)+"\t"+String(charging?1:0)+"\t"+page;
+ String report="DEVICE\t"+seq+"\t0.49\t"+String(battery)+"\t"+String(charging?1:0)+"\t"+page;
  report+="\t"+String(standby.resting()?1:0)+"\t"+String(displayBrightness);
  report+="\t"+String(settings.light)+"\t"+String(settings.rest)+"\t"+String(settings.petMotion?1:0);
  report+="\t"+String(settingsSaveFailed?1:0)+"\t"+String(millis()/1000)+"\t"+String(syncState.age(millis()));
@@ -784,7 +812,7 @@ void receive(SyncTransport via=SyncTransport::usb){
    if(argument=="arm"&&owner){desktopAction.reset();desktopAction.armed=true;}
    if(owner&&desktopAction.available(now)){
     desktopAction.queued=false;
-    reply("ACTION\t"+seq+"\t"+String(desktopAction.serial)+"\t"+desktopAction.thread.c_str(),via);
+    reply("ACTION\t"+seq+"\t"+String(desktopAction.serial)+"\t"+desktopAction.thread.c_str()+(desktopAction.anyTask?"\ttask":""),via);
    }else reply("ACTION\t"+seq+"\t0\t-",via);
   }else{
    String outcome=field(line,p);
@@ -1014,6 +1042,8 @@ void loop(){
  while(Serial.available()){char c=Serial.read();if(c=='\n'){if(!overflow)receive();line="";overflow=false;}else if(c!='\r'){if(line.length()<4096)line+=c;else overflow=true;}}
  M5.update();uint32_t now=millis();bool wasCelebrating=ui.celebrating;ui.tick(now);
  desktopAction.tick(now);desk.tick(now);
+ static bool hadActionFeedback=false;bool hasActionFeedback=*desktopAction.feedback(now);
+ if(hadActionFeedback!=hasActionFeedback){hadActionFeedback=hasActionFeedback;fullRedraw=true;}
  if(syncState.expire(now)){desk.clear();desktopAction.reset();voiceFace.clear();connected=false;standby.wake(now);cacheDirty=true;fullRedraw=true;}
  tickFocus(now);observeDesktopPresses();
  if(wasCelebrating!=ui.celebrating)fullRedraw=true;
@@ -1040,13 +1070,16 @@ void loop(){
    if(pressedInFocus&&pressedFocusControls)focusPresentation.reveal(now);
    stickyPress.begin(stickyNote,!ui.details&&!settingsOpen&&!focusOpen&&noteVisible(),t.x,t.y);
    pressedHomeFocus=!ui.details&&!settingsOpen&&!focusOpen&&homeFocusEntry(t.x,t.y);
-   waitingPress.begin(waitingTask(),!ui.details&&!settingsOpen&&!focusOpen&&desktopAction.armed&&!desktopAction.inFlight,waitingRegion,t.x,t.y);
+   homePress.begin(homeTask(),!ui.details&&!settingsOpen&&!focusOpen&&!desk.page&&!noteVisible()&&desktopAction.armed&&!desktopAction.inFlight,waitingRegion,t.x,t.y);
    pressedInSettings=settingsOpen;pressedSetting=SettingsLayout::hit(t.x,t.y,settingsPage);
    pressedInList=ui.details&&!desk.page&&!settingsOpen&&!focusOpen;pressedHit=listLayout().hit(t.x,t.y);
    pressedFocusEntry=pressedInList&&FocusLayout::entry(t.x,t.y);
    pressedSettingsEntry=pressedInList&&SettingsLayout::entry(t.x,t.y);
    pressedInRows=pressedInList&&listLayout().inRows(t.x,t.y);
    gesture.begin(t.x,t.y,now,pressedInRows||(pressedExtraPage==1&&t.y>=94&&t.y<222));
+   listTouchX=t.x;listTouchY=t.y;
+   listPress.begin(listTaskTarget(ui,syncState.live(),t.x,t.y),pressedInRows&&!ui.scroll.moving()&&desktopAction.armed&&!desktopAction.inFlight,taskListRegion,t.x,t.y);
+   if(homePress.captured||listPress.captured)desktopAction.result.clear();
    if(pressedInList)ui.scroll.begin(now);
    touchFeedback=true;touchFeedbackAt=now;touchX=t.x;touchY=t.y;
    if(pressedHit==Hit::back)fullRedraw=true;
@@ -1060,15 +1093,19 @@ void loop(){
      extraHoldFired=true;desk.request("open",extraPressTarget,now);fullRedraw=true;
     }
    }
-   touchX=t.x;touchY=t.y;touchFeedbackAt=now;
+   touchX=t.x;touchY=t.y;listTouchX=t.x;listTouchY=t.y;touchFeedbackAt=now;
    if(pressedInFocus&&pressedFocusControls)focusPresentation.reveal(now);
    if(pressedInFocus&&focusOpen){
     if(focusWaitingPress.poll(focusWaitingTarget(ui.tasks,syncState.live(),ui.currentIndex),desktopAction.armed&&!desktopAction.inFlight,
       pressedFocusPhase==companion.focus.phase&&pressedFocusStage==companion.focus.stage,gesture,t.x,t.y,now)){
      focusActionFeedback=desktopAction.request(focusWaitingPress.id,now)||focusActionFeedback;fullRedraw=true;
     }
-   }else if(waitingPress.poll(waitingTask(),!ui.details&&!settingsOpen&&!focusOpen&&desktopAction.armed&&!desktopAction.inFlight,gesture,t.x,t.y,now)){
-    desktopAction.request(waitingPress.id,now);fullRedraw=true;
+   }else if(pressedInList&&ui.details&&!settingsOpen&&!focusOpen&&!desk.page){
+    if(listPress.poll(listTaskTarget(ui,syncState.live(),t.x,t.y),desktopAction.armed&&!desktopAction.inFlight,gesture,t.x,t.y,now)){
+     desktopAction.request(listPress.id,now,true);fullRedraw=true;
+    }
+   }else if(homePress.poll(homeTask(),!ui.details&&!settingsOpen&&!focusOpen&&!desk.page&&!noteVisible()&&desktopAction.armed&&!desktopAction.inFlight,gesture,t.x,t.y,now)){
+    desktopAction.request(homePress.id,now,true);fullRedraw=true;
    }
   }
   if(t.wasReleased()){
@@ -1109,7 +1146,7 @@ void loop(){
       StickyNote next;if(!*stickyNote.update(stickyPress.revision,"done","",next))persistNote(next);
       fullRedraw=true;
      }else if(action.tap&&!stickyPress.canceled){ui.open(now);fullRedraw=true;}
-    }else if(waitingPress.fired){
+    }else if(homePress.fired){
      fullRedraw=true;
     }else if(action.tap&&pressedHomeFocus&&homeFocusEntry(t.x,t.y))openFocus(now);
     else if(action.tap){ui.open(now);fullRedraw=true;}
@@ -1124,7 +1161,7 @@ void loop(){
     }
    }
    if(pressedHit==Hit::back)fullRedraw=true;
-   waitingPress.reset();stickyPress.captured=false;focusWaitingPress.reset();inspect();
+   homePress.reset();listPress.reset();stickyPress.captured=false;focusWaitingPress.reset();inspect();
   }
   }
  }

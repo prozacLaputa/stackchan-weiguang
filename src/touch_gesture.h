@@ -15,7 +15,7 @@ struct ListLayout {
     Hit hit(int x,int y) const {
         if(x<12||x>=width-12)return Hit::none;
         if(y>=28&&y<64){if(x<96)return Hit::back;return Hit::none;}
-        // 任务行只是信息展示区，没有点击操作。
+        // 返回按钮单独判定；任务卡片的按住手势由 TaskPress 处理。
         return Hit::none;
     }
 };

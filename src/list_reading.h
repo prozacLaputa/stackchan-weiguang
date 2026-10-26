@@ -7,7 +7,7 @@
 #include "notice_state.h"
 
 namespace TaskRow {
-constexpr int height=72,titleTop=6,lineHeight=18,titleHeight=34,statusTop=48;
+constexpr int height=80,cardTop=2,cardHeight=72,titleTop=8,lineHeight=18,titleHeight=34,statusTop=48;
 }
 
 // UTF-8 按完整字符换行；宽度由实际屏幕字体测量，不按字节截断中文。

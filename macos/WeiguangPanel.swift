@@ -186,10 +186,10 @@ final class PanelModel:ObservableObject {
     var device:Device? {state?.bridge?.device}
     var companion:Companion? {state?.bridge?.companion}
     var note:DeskNote? {state?.bridge?.note}
-    var noteAvailable:Bool {available && ["0.46","0.47","0.48"].contains(device?.firmware ?? "") && state?.noteFresh()==true}
+    var noteAvailable:Bool {available && ["0.46","0.47","0.48","0.49"].contains(device?.firmware ?? "") && state?.noteFresh()==true}
     var noteConflict:Bool {noteDirty && noteBaseRevision != note?.revision}
     var noteStatus:String {
-        if let version=device?.firmware,!["0.46","0.47","0.48"].contains(version){return "连接 USB 更新后可用"}
+        if let version=device?.firmware,!["0.46","0.47","0.48","0.49"].contains(version){return "连接 USB 更新后可用"}
         guard noteAvailable,let n=note else{return "等待机器人同步 · 草稿可继续编辑"}
         if n.save_error==1{return "上次保存失败，原便签仍保留"}
         return n.state=="active" ? "已贴在机器人上" : n.state=="done" ? "已收起 · 可以重新贴上" : "还没有便签"
@@ -232,13 +232,13 @@ final class PanelModel:ObservableObject {
             self.refresh()
         }
     }
-    var focusAvailable:Bool {available && ["0.34","0.35","0.36","0.37","0.38","0.39","0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48"].contains(device?.firmware ?? "") && state?.companionFresh() == true}
+    var focusAvailable:Bool {available && ["0.34","0.35","0.36","0.37","0.38","0.39","0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48","0.49"].contains(device?.firmware ?? "") && state?.companionFresh() == true}
     var companionSettingsAvailable:Bool {available && device?.daily != nil && device?.away_rest != nil && device?.greeting != nil && device?.affection != nil}
     var focusRunning:Bool {companion?.focus_state == "running"}
     var focusPaused:Bool {companion?.focus_state == "paused"}
     var focusActive:Bool {focusRunning || focusPaused}
     var focusNextAvailable:Bool {focusAvailable && companion?.resting == true && companion?.focus_state == "done"}
-    var focusPauseAvailable:Bool {focusAvailable && ["0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48"].contains(device?.firmware ?? "")}
+    var focusPauseAvailable:Bool {focusAvailable && ["0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48","0.49"].contains(device?.firmware ?? "")}
     var focusSummaryTitle:String {
         guard state?.companionFresh() == true,let c=companion else{return "等待机器人同步"}
         guard let day=c.today_day else{return "更新固件后可记录"}
@@ -776,7 +776,7 @@ struct PanelView:View {
                 else {Button("开始专注"){model.focus("start")}.buttonStyle(PanelActionStyle(prominent:true)).disabled(!model.focusAvailable || model.busy)}
             }
             DisclosureGroup("计时说明") {
-                Text(["0.44","0.45","0.46","0.47","0.48"].contains(model.device?.firmware ?? "") ? "专注到时自动休息 5 分钟，休息结束点下一轮。两段均可暂停；结束取消整个循环。机器人重启只清除当前计时。" : "静音计时，关闭控制台或短暂断连仍会继续；机器人重启后清除。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
+                Text(["0.44","0.45","0.46","0.47","0.48","0.49"].contains(model.device?.firmware ?? "") ? "专注到时自动休息 5 分钟，休息结束点下一轮。两段均可暂停；结束取消整个循环。机器人重启只清除当前计时。" : "静音计时，关闭控制台或短暂断连仍会继续；机器人重启后清除。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
                 Text("今日专注按 Mac 的本地日期累计；完成一轮才计入轮数，提前结束也累计已专注的时间，暂停和休息时间不计入。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true).padding(.top,6)
             }.font(.system(size:11)).tint(quiet)
             Divider().overlay(Color.white.opacity(0.07))
@@ -1182,7 +1182,7 @@ final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
             focused.acceptReply(ControlReply(ok:true,companion:companion,companion_at:clock));precondition(!focused.focusRunning)
             focusState.bridge?.companion=Companion(presence:"awake",focus_state:"running",remaining:880,total:900,welcome:0)
             let reopened=PanelModel();reopened.accept(focusState);precondition(reopened.focusMinutes==15)
-            for version in ["0.41","0.42","0.43","0.44"] {
+            for version in ["0.41","0.42","0.43","0.44","0.48","0.49"] {
                 var supported=pausedState;supported.bridge?.device?.firmware=version
                 let checked=PanelModel();checked.accept(supported)
                 precondition(checked.focusAvailable && checked.focusPauseAvailable)
@@ -1215,6 +1215,11 @@ final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
             noteState.bridge?.note=DeskNote(revision:1,state:"active",text:"下班带充电器",save_error:0);noteState.bridge?.note_at=Date().timeIntervalSince1970
             let noteModel=PanelModel();noteModel.accept(noteState)
             precondition(noteModel.noteAvailable && noteModel.noteDraft=="下班带充电器")
+            for version in ["0.48","0.49"] {
+                var supported=noteState;supported.bridge?.device?.firmware=version
+                let checked=PanelModel();checked.accept(supported)
+                precondition(checked.noteAvailable && checked.focusAvailable && checked.focusPauseAvailable)
+            }
             noteModel.editNote("买牛奶")
             noteState.bridge?.note=DeskNote(revision:2,state:"done",text:"下班带充电器",save_error:0)
             noteModel.accept(noteState);precondition(noteModel.noteConflict && noteModel.noteDraft=="买牛奶")

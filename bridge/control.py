@@ -81,20 +81,20 @@ def validate_request(value):
 def parse_device(raw, seq):
     parts = raw.decode('ascii').strip().split('\t')
     if len(parts) not in (14,16,25,29,30,31,41) or parts[:2] != ['DEVICE', str(seq)]: raise ValueError('invalid_device_reply')
-    if (parts[2],len(parts)) not in (('0.24',14),('0.25',16),('0.26',16),('0.28',16),('0.29',16),('0.30',25),('0.32',25),('0.33',25),('0.34',25),('0.35',29),('0.36',29),('0.37',30),('0.38',30),('0.39',30),('0.40',30),('0.41',31),('0.42',31),('0.43',31),('0.44',31),('0.45',31),('0.46',31),('0.47',31),('0.48',41)) or parts[5] not in ('home', 'list', 'settings', 'game', 'focus'): raise ValueError('unsupported_device')
-    if parts[5]=='focus' and parts[2] not in ('0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'): raise ValueError('unsupported_device')
+    if (parts[2],len(parts)) not in (('0.24',14),('0.25',16),('0.26',16),('0.28',16),('0.29',16),('0.30',25),('0.32',25),('0.33',25),('0.34',25),('0.35',29),('0.36',29),('0.37',30),('0.38',30),('0.39',30),('0.40',30),('0.41',31),('0.42',31),('0.43',31),('0.44',31),('0.45',31),('0.46',31),('0.47',31),('0.48',41),('0.49',41)) or parts[5] not in ('home', 'list', 'settings', 'game', 'focus'): raise ValueError('unsupported_device')
+    if parts[5]=='focus' and parts[2] not in ('0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'): raise ValueError('unsupported_device')
     if parts[5]=='game' and parts[2]!='0.32': raise ValueError('unsupported_device')
     keys = ('battery', 'charging', 'resting', 'brightness', 'light', 'rest', 'pet', 'save_error', 'uptime', 'sync_age')
     numbers = [int(parts[i]) for i in (3, 4, 6, 7, 8, 9, 10, 11, 12, 13)]
     bounds = [(-1,100),(0,1),(0,1),(0,255),(0,3),(0,4),(0,1),(0,1),(0,4294967),(0,4294967)]
-    if parts[2] in ('0.25','0.26','0.28','0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):
+    if parts[2] in ('0.25','0.26','0.28','0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
         keys += ('wait_motion','done_motion')
         numbers += [int(parts[14]),int(parts[15])]
         bounds += [(0,1),(0,1)]
     if any(not low <= number <= high for number, (low, high) in zip(numbers, bounds)):
         raise ValueError('invalid_device_reply')
     device = dict(zip(keys, numbers), firmware=parts[2], page=parts[5])
-    if parts[2] in ('0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):
+    if parts[2] in ('0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
         states={'ready','moving','cooldown','disabled','unavailable','screen','release','sensor','checking'}
         results={'none','detected','moving','completed','skipped','stopped','failed'}
         reasons={'none','not-initialized','bus-init','power-init','torque-release','calibration',
@@ -110,19 +110,19 @@ def parse_device(raw, seq):
             raise ValueError('invalid_motion_reply')
         device.update(zip(('pet_cooldown_ms','head_sensor','pet_event','pet_age','head_down'),extra))
         device.update(motion_state=parts[16],motion_reason=parts[17],pet_result=parts[22],pet_reason=parts[23])
-    if parts[2] in ('0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):
+    if parts[2] in ('0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
         extra=[int(p) for p in parts[25:29]]
         if any(not 0<=v<=limit for v,limit in zip(extra,(2,1,1,1))):raise ValueError('invalid_device_reply')
         device.update(zip(('daily','away_rest','greeting','affection'),extra))
-    if parts[2] in ('0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):
+    if parts[2] in ('0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
         skin=int(parts[29])
         if skin not in (0,1):raise ValueError('invalid_device_reply')
         device['skin']=skin
-    if parts[2] in ('0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):
+    if parts[2] in ('0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
         focus=int(parts[30])
         if focus not in (0,1):raise ValueError('invalid_device_reply')
         device['focus_motion']=focus
-    if parts[2]=='0.48':
+    if parts[2] in ('0.48','0.49'):
         names=('motion_fault_id','motion_fault_at','motion_fault_position','motion_fault_command','motion_fault_load',
                'motion_fault_phase','motion_fault_command_age','motion_fault_sample_gap','motion_recoverable')
         values=[int(parts[i]) for i in (31,33,34,35,36,37,38,39,40)]

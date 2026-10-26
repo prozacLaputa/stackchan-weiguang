@@ -1,0 +1,23 @@
+{
+  "pillow": "12.1.1",
+  "fonts": [
+    {
+      "name": "status30",
+      "size": 30,
+      "height": 36,
+      "baseline": 28,
+      "glyphs": 733,
+      "bitmap_bytes": 105552,
+      "sha256": "2913702265592d74e66a8189b658777905c71368bc124f8dc8a4e3287ec9f87f"
+    },
+    {
+      "name": "title24",
+      "size": 24,
+      "height": 30,
+      "baseline": 23,
+      "glyphs": 28256,
+      "bitmap_bytes": 2543040,
+      "sha256": "85125174d21376b5c1ddb9c14ce1485776ef3ae429a321e22d8c96e3740629a6"
+    }
+  ]
+}

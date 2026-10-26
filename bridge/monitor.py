@@ -178,20 +178,37 @@ class Tail:
         self.identity = None
         self.tracker = Tracker()
 
-    def poll(self):
-        stat = self.path.stat()
-        identity = (stat.st_dev, stat.st_ino)
-        if identity != self.identity or stat.st_size < self.offset:
-            self.offset = max(0, stat.st_size - 2_000_000)
-            if self.offset:
-                with self.path.open('rb') as start:
-                    start.seek(self.offset)
-                    start.readline()
-                    self.offset = start.tell()
-            self.tracker = Tracker()
-            self.identity = identity
-        if stat.st_size==self.offset:
-            return self.tracker.current()
+    def _turn_start_before(self, limit):
+        # 只在尾部无法恢复生命周期时回溯。块间重叠覆盖短生命周期记录，
+        # 大工具输出不拼接进内存；找到最近一次真实开始后只重放这一轮。
+        block, overlap = 262144, 65536
+        with self.path.open('rb') as source:
+            end = limit
+            while end:
+                start = max(0, end - block)
+                source.seek(start)
+                lines = source.read(end - start).splitlines(keepends=True)
+                offset = end
+                for raw in reversed(lines):
+                    offset -= len(raw)
+                    if (start and offset == start) or not raw.endswith(b'\n'):
+                        continue
+                    if len(raw) > overlap or b'"task_started"' not in raw:
+                        continue
+                    try:
+                        record = json.loads(raw)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if (isinstance(record, dict) and record.get('type') == 'event_msg'
+                            and isinstance(record.get('payload'), dict)
+                            and record['payload'].get('type') == 'task_started'):
+                        return offset
+                if not start:
+                    break
+                end = start + overlap
+        return None
+
+    def _consume(self):
         with self.path.open('rb') as f:
             f.seek(self.offset)
             while raw := f.readline():
@@ -202,6 +219,29 @@ class Tail:
                     self.tracker.accept(json.loads(raw))
                 except (ValueError, UnicodeDecodeError):
                     continue
+
+    def poll(self):
+        stat = self.path.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        initial_offset = 0
+        if identity != self.identity or stat.st_size < self.offset:
+            self.offset = max(0, stat.st_size - 2_000_000)
+            if self.offset:
+                with self.path.open('rb') as start:
+                    start.seek(self.offset)
+                    start.readline()
+                    self.offset = start.tell()
+            initial_offset = self.offset
+            self.tracker = Tracker()
+            self.identity = identity
+        if stat.st_size != self.offset:
+            self._consume()
+        if initial_offset and self.tracker.state == 'unknown':
+            anchor = self._turn_start_before(initial_offset)
+            if anchor is not None:
+                self.offset = anchor
+                self.tracker = Tracker()
+                self._consume()
         return self.tracker.current()
 
 def metadata(db, thread):

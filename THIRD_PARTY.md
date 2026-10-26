@@ -22,3 +22,5 @@ Reason: 记录原厂表情、触摸驱动和接近通道待机配置来源
 
 - 可选语音依赖 `certifi`、`cryptography`（Python）和系统安装的 `ffmpeg`／`libopus`；不把这些工具、系统音色或原厂身份打包进仓库。解析和传输代码参考 [XiaoZhi ESP32 协议](https://github.com/78/xiaozhi-esp32) 与 [M5Stack StackChan](https://github.com/m5stack/StackChan) 公开实现独立编写。原厂云服务、角色与音色按各自条款使用，不属于本项目 MIT 许可的资产。
 - 本地视觉使用 macOS Apple Vision 与 Arduino-ESP32 随附的摄像头支持；不打包额外识别模型或保存图像。
+
+- 主屏 Weiguang Home Sans 字形派生自 Noto Sans Mono CJK SC，使用 SIL Open Font License 1.1；保留 [许可证](src/fonts/OFL-Noto.txt)、[署名](src/fonts/NOTICE-Noto.txt)、[固定来源与校验](src/fonts/sources.json) 及 [生成说明](src/fonts/README.md)。代码的 MIT 许可不取代字体数据的 OFL 许可。

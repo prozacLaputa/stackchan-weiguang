@@ -10,9 +10,17 @@ A StackChan desk companion for coding, focus sessions and music, with optional c
 
 Firmware + a local Mac bridge + a native control panel. Task sync uses USB or Bluetooth without robot Wi-Fi. Tasks, timers, notes, music metadata and local vision make no cloud-model calls. **Optional voice uses the factory cloud service, Mac internet access and your own valid device identity. It does not use a Codex subscription; pricing and long-term quotas remain unknown.** This independent project is not affiliated with M5Stack or OpenAI.
 
-**Experimental v0.48 · updated October 19, 2026.** This is a source update, without a signed/notarized Mac installer or prebuilt firmware. QQ Music display and pause/play were verified on hardware; NetEase playback and the natural return-to-work flow still await hands-on acceptance.
+**Experimental v0.49 · updated October 26, 2026.** This is a source update, without a signed/notarized Mac installer or prebuilt firmware. QQ Music display and pause/play were verified on hardware; NetEase playback and the natural return-to-work flow still await hands-on acceptance.
 
 ## What changed
+
+- **Readable two-line home card:** retain the small face and enlarge status/counts, using native 30px heading glyphs and a crisp 16px footer without scaling. New completions take priority; notes briefly yield to the completion notice while timers keep running.
+- **Hold for 0.3 seconds to open:** home cards and running, waiting or completed list cards open Codex while your finger is still down. Rounded borders and wider gaps separate rows; scrolling, leaving a card or a changed target cancels the action.
+- **More reliable state and response:** recover a turn-start event outside the initial log tail after a bridge restart, distinguish unknown state from zero running tasks, and collect navigation requests sooner. Only current Top8 conversations can open; no messages or approvals are sent.
+
+Update the Mac bridge first, then the matching firmware. Routine task sync still works over Bluetooth; firmware flashing requires USB.
+
+### Retained capabilities
 
 - **Local Mac app**: migrate an existing installation to `/Applications/微光控制台.app`, with Spotlight, Dock and native menus. Optional voice/vision components live in a fixed per-user data directory rather than the development checkout. System dependencies are still required.
 - **Motion recovery**: for eligible faults, save evidence and check torque release, position and stillness over BLE before restoring motion. No test nod, robot reboot or Pomodoro reset; existing safety limits remain.
@@ -39,7 +47,7 @@ An actual device framebuffer with sample content, not a concept image. These scr
 ## Features
 
 - **Tasks and return recap:** up to eight recently active Codex conversations, progress, waiting states and results. After a lock/absence of at least 30 seconds, show currently waiting tasks and reliably observed new results.
-- **Quiet alerts:** amber indicators and expressions. Hold a waiting card for about 0.9 seconds to open its Codex conversation without releasing your finger.
+- **Quiet alerts:** amber indicators and expressions. Hold a home or task-list card for about 0.3 seconds to request its Codex conversation without releasing your finger.
 - **Companion:** default/cat faces, blush, optional small head-touch nods, blinks, yawns and closed-eye rest without dimming.
 - **Focus and notes:** 15/25/45-minute progress-ring timer, five-minute breaks, daily totals and one persistent warm-yellow note of up to 32 characters.
 - **Music:** QQ Music/NetEase metadata, progress and previous/play-pause/next controls. A small face animation uses screen motion only.
@@ -93,7 +101,8 @@ Allow Bluetooth access for the helper. Installation is per-user, without sudo. B
 | Action | Result |
 | --- | --- |
 | Tap home / swipe list | Browse tasks |
-| Hold waiting card or recap row ~0.9 s | Open its Codex conversation, never auto-reply |
+| Hold home / task-list card ~0.3 s | Request its Codex conversation; scrolling cancels, never auto-reply |
+| Hold a return-recap row ~0.9 s | Open its conversation using the existing gesture |
 | Touch head | Expression and optional nod |
 | Home → Music | Details and playback controls |
 | Timer tap / Exit / End | Show controls / return home while timing / cancel cycle |
@@ -111,4 +120,4 @@ Codex local storage, private macOS media interfaces and the factory voice servic
 
 ## License
 
-Original code is [MIT](LICENSE). Driver and Python dependencies retain their licenses; see [third-party sources](THIRD_PARTY.md). Factory services, roles and voices are not licensed by this repository.
+Original code is [MIT](LICENSE). The derived Weiguang Home Sans font uses [SIL OFL 1.1](src/fonts/OFL-Noto.txt). Driver and Python dependencies retain their licenses; see [third-party sources](THIRD_PARTY.md). Factory services, roles and voices are not licensed by this repository.

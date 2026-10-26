@@ -22,8 +22,8 @@ int main(){
  assert(!press.captured&&!press.poll(target,true,true,gesture,160,22,2100));
  presentation.reveal(2100); // A first tap only reveals; a separate hold is required.
  auto begin=[&](uint32_t at=2200){press.begin(target,true,true,true,160,22);gesture.begin(160,22,at,false);};
- begin();assert(!press.poll(target,true,true,gesture,160,22,3099));
- assert(press.poll(target,true,true,gesture,160,22,3100)&&gesture.active);
+ begin();assert(!press.poll(target,true,true,gesture,160,22,2499));
+ assert(press.poll(target,true,true,gesture,160,22,2500)&&gesture.active);
  assert(action.request(press.id,3100));action.queued=false;assert(action.finish(action.serial,"opened",3101));
  assert(!press.poll(target,true,true,gesture,160,22,3102));
  gesture.release(160,22,3200);assert(!press.poll(target,true,true,gesture,160,22,3200));

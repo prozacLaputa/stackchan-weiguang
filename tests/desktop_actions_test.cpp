@@ -7,16 +7,16 @@ int main(){
  TouchGesture g;WaitingPress press;
  Task task{"id","needs_input","待处理","","question-1","ask","","",""};
  auto begin=[&](uint32_t at=100){g.begin(100,183,at,false);press.begin(&task,true,waitingRegion,100,183);};
- begin();assert(!press.poll(&task,true,g,100,183,999));
- assert(press.poll(&task,true,g,100,183,1000)&&g.active&&press.fired); // Still held at threshold.
+ begin();assert(!press.poll(&task,true,g,100,183,399));
+ assert(press.poll(&task,true,g,100,183,400)&&g.active&&press.fired); // Still held at threshold.
  DesktopAction dispatched;dispatched.armed=true;assert(dispatched.request(press.id,1000));
  dispatched.queued=false;assert(dispatched.finish(dispatched.serial,"opened",1001));
  assert(!press.poll(&task,true,g,100,183,1002)); // ACK does not rearm this finger.
  assert(!press.poll(&task,true,g,100,183,9000)); // Nor does feedback expiry.
  auto r=g.release(100,183,9001);assert(!r.tap&&!press.poll(&task,true,g,100,183,9001));
  assert(dispatched.serial==1);
- begin(10000);assert(press.poll(&task,true,g,100,183,10900)); // Next touch can open again.
- begin();g.release(100,183,999);assert(!press.poll(&task,true,g,100,183,1000));
+ begin(10000);assert(press.poll(&task,true,g,100,183,10300)); // Next touch can open again.
+ begin();g.release(100,183,399);assert(!press.poll(&task,true,g,100,183,1000));
  begin();g.release(100,183,1100);assert(!press.poll(&task,true,g,100,183,1100)); // Release is never a trigger.
  begin();g.move(109,183);assert(!press.poll(&task,true,g,100,183,1000));
  begin();assert(!press.poll(&task,true,g,100,239,500));assert(!press.poll(&task,true,g,100,183,1000));

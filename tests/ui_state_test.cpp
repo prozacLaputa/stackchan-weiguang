@@ -44,7 +44,7 @@ void touchAndLayout(){
  assert(l.hit(25,45)==Hit::back&&l.hit(95,30)==Hit::back&&l.hit(126,30)==Hit::none);
  assert(l.hit(260,45)==Hit::none&&!l.inRows(30,40));
  for(int y=l.rowsTop();y<240;y++)for(int x=0;x<320;x++)assert(l.hit(x,y)==Hit::none);
- assert(l.inRows(100,200)&&l.viewportHeight()==162&&l.rowHeight()==TaskRow::height&&l.rowHeight()==72);
+ assert(l.inRows(100,200)&&l.viewportHeight()==162&&l.rowHeight()==TaskRow::height&&l.rowHeight()==80);
  // 回归：先横向偏 10px，再上划，不应被永久锁死；轻微斜划和 4px 起滑。
  g.begin(150,180,1700);assert(g.move(160,177)==0);assert(g.move(161,120)==-60);assert(!g.release(161,120,1800).tap);
  g.begin(150,180,1900);assert(g.move(154,176)==-4);assert(!g.release(154,176,1920).tap);

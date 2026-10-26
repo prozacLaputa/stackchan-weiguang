@@ -14,7 +14,7 @@ import tempfile
 import time
 import zipfile
 
-VERSION = '0.48'
+VERSION = '0.49'
 LIMIT = 128 * 1024
 PARTS = 3
 CONNECTIONS = {'connected','waiting_ble','waiting_usb','waiting_ack','stopped'}

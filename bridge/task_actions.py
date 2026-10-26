@@ -97,3 +97,33 @@ def parse_action(raw, seq):
     if not parts[2].isdigit() or not 0 < int(parts[2]) <= 4294967295 or not valid_thread_id(parts[3]):
         raise ValueError('invalid_action_reply')
     return int(parts[2]), parts[3]
+
+
+def parse_action_request(raw, seq):
+    """旧四字段仍只打开待回应；新 task 范围用于真实卡片长按。"""
+    parts=raw.decode('ascii').strip().split('\t')
+    scope='waiting'
+    if len(parts)==5:
+        if parts[4]!='task':raise ValueError('invalid_action_scope')
+        scope='task'
+        parts=parts[:4]
+    event=parse_action('\t'.join(parts).encode('ascii'),seq)
+    if event is None:
+        if scope!='waiting':raise ValueError('empty_task_action')
+        return None
+    return (*event,scope)
+
+
+def open_visible(source, thread_id, presence, opener=None):
+    """打开当前 Top 8 中的会话，不根据状态限制导航；不发送回复或批准。"""
+    import subprocess
+    if presence!='awake':return 'locked'
+    if not valid_thread_id(thread_id):return 'stale'
+    try:
+        if not any(t.get('id')==thread_id for t in source.snapshot()[:8]):return 'stale'
+        url=f'codex://threads/{thread_id.lower()}?hostId=local'
+        if opener is None:
+            subprocess.run(['/usr/bin/open',url],check=True,timeout=2,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        else:opener(url)
+        return 'opened'
+    except Exception:return 'failed'

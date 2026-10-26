@@ -237,7 +237,7 @@ class Bridge:
             self.previous = state
 
     def maintain_voice(self, stop=None):
-        if not self.control or not self.link or self.baseline_pending or not self.device or self.device.get('firmware') not in ('0.47','0.48'):return
+        if not self.control or not self.link or self.baseline_pending or not self.device or self.device.get('firmware') not in ('0.47','0.48','0.49'):return
         level=self.control.voice.current()
         if level<0 and not self.voice_active:return
         self.seq+=1
@@ -282,17 +282,17 @@ class Bridge:
         fields=['DEVICE_INFO',str(self.seq)]
         if command and command.request['action']=='configure':
             keys=('light','rest','pet')
-            supports_motion=self.device and self.device.get('firmware') in ('0.25','0.26','0.28','0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48')
+            supports_motion=self.device and self.device.get('firmware') in ('0.25','0.26','0.28','0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49')
             if supports_motion:keys+=('wait_motion','done_motion')
             elif any(k in command.request['changes'] for k in ('wait_motion','done_motion')):
                 command.finish({'ok':False,'error':'firmware_update_required'});return
-            if self.device and self.device.get('firmware') in ('0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):keys+=('daily','away_rest','greeting','affection')
+            if self.device and self.device.get('firmware') in ('0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):keys+=('daily','away_rest','greeting','affection')
             elif any(k in command.request['changes'] for k in ('daily','away_rest','greeting','affection')):
                 command.finish({'ok':False,'error':'firmware_update_required'});return
-            if self.device and self.device.get('firmware') in ('0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):keys+=('skin',)
+            if self.device and self.device.get('firmware') in ('0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):keys+=('skin',)
             elif 'skin' in command.request['changes']:
                 command.finish({'ok':False,'error':'firmware_update_required'});return
-            if self.device and self.device.get('firmware') in ('0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):keys+=('focus_motion',)
+            if self.device and self.device.get('firmware') in ('0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):keys+=('focus_motion',)
             elif 'focus_motion' in command.request['changes']:
                 command.finish({'ok':False,'error':'firmware_update_required'});return
             fields=['DEVICE_SET',str(self.seq)]+[str(command.request['changes'].get(key,'-')) for key in keys]
@@ -322,7 +322,7 @@ class Bridge:
     def recover_motion(self,command,stop=None):
         # 单次人工请求，不重连重发；持久保存首个故障后才允许解除锁定。
         expected=command.request['fault_id']
-        if not self.device or self.device.get('firmware')!='0.48':
+        if not self.device or self.device.get('firmware') not in ('0.48','0.49'):
             command.finish({'ok':False,'error':'firmware_update_required'});return
         if not self.device_at or not 0<=time.time()-self.device_at<10 or self.device.get('motion_fault_id')!=expected:
             command.finish({'ok':False,'motion_result':'stale-fault'});return
@@ -355,7 +355,7 @@ class Bridge:
         if not self.link or self.baseline_pending:
             if command:command.finish({'ok':False,'error':'device_unavailable'})
             return
-        if not self.device or self.device.get('firmware') not in ('0.46','0.47','0.48'):
+        if not self.device or self.device.get('firmware') not in ('0.46','0.47','0.48','0.49'):
             if command:command.finish({'ok':False,'error':'firmware_update_required'})
             return
         if command is None and time.monotonic()-self.last_note_query<2:return
@@ -393,15 +393,15 @@ class Bridge:
         if not self.link or self.baseline_pending:
             if command:command.finish({'ok':False,'error':'device_unavailable'})
             return
-        if not self.device or self.device.get('firmware') not in ('0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):
+        if not self.device or self.device.get('firmware') not in ('0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
             if command:command.finish({'ok':False,'error':'firmware_update_required'})
             return
         if command is None and time.monotonic()-self.last_companion_query<2:return
         if command and (time.monotonic()>command.expires or command.done.is_set()):
             command.finish({'ok':False,'error':'confirmation_timeout'});return
-        if command and command.request['operation'] in ('pause','resume') and self.device.get('firmware') not in ('0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):
+        if command and command.request['operation'] in ('pause','resume') and self.device.get('firmware') not in ('0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
             command.finish({'ok':False,'error':'firmware_update_required'});return
-        if command and command.request['operation']=='next' and self.device.get('firmware') not in ('0.44','0.45','0.46','0.47','0.48'):
+        if command and command.request['operation']=='next' and self.device.get('firmware') not in ('0.44','0.45','0.46','0.47','0.48','0.49'):
             command.finish({'ok':False,'error':'firmware_update_required'});return
         self.last_companion_query=time.monotonic();self.seq+=1
         if command:
@@ -410,7 +410,7 @@ class Bridge:
         else:
             state,token=self.presence.snapshot() if self.presence else ('unknown',0)
             fields=['COMPANION_SET',str(self.seq),state,str(token)]
-            if self.device.get('firmware') in ('0.45','0.46','0.47','0.48'):
+            if self.device.get('firmware') in ('0.45','0.46','0.47','0.48','0.49'):
                 import calendar
                 fields.append(str(calendar.timegm(time.localtime())))
         result={'ok':False,'error':'confirmation_timeout'}
@@ -437,9 +437,11 @@ class Bridge:
             self.status('connected' if self.link else 'waiting_ble' if self.transport!='usb' else 'waiting_usb',self.last_data_ok)
 
     def maintain_actions(self, stop=None):
-        from task_actions import parse_action, open_pending
-        if not self.control or not self.link or self.baseline_pending or not self.device or self.device.get('firmware') not in ('0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'):return
-        if time.monotonic()-self.last_action_query<.8:return
+        from task_actions import parse_action_request, open_pending, open_visible
+        if not self.control or not self.link or self.baseline_pending or not self.device or self.device.get('firmware') not in ('0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):return
+        # 有可见会话时跟随主循环收取卡片长按请求，避免手势完成后再等慢查询。
+        interval=.1 if self.last_data_ok and self.tasks else .8
+        if time.monotonic()-self.last_action_query<interval:return
         self.last_action_query=time.monotonic();self.seq+=1
         mode='poll' if self.actions_armed else 'arm'
         try:
@@ -448,15 +450,16 @@ class Bridge:
             while time.monotonic()<deadline and not (stop and stop.is_set()):
                 raw=self.link.readline().strip()
                 if not raw.startswith(f'ACTION\t{self.seq}\t'.encode()):continue
-                event=parse_action(raw,self.seq)
+                event=parse_action_request(raw,self.seq)
                 self.actions_armed=True
                 if event is None:return
-                event_id,thread_id=event
+                event_id,thread_id,scope=event
                 # 断线重新 arm 时丢弃旧意图；消费后不重试打开，即使回执丢失。
                 if mode=='arm' or event_id<=self.last_action_id:return
                 self.last_action_id=event_id
                 state=self.presence.snapshot()[0] if self.presence else 'unknown'
-                outcome=open_pending(self.source,thread_id,state) if self.last_data_ok else 'failed'
+                opener=open_visible if scope=='task' else open_pending
+                outcome=opener(self.source,thread_id,state) if self.last_data_ok else 'failed'
                 if stop and stop.is_set():return
                 self.seq+=1
                 self.link.write(f'ACTION_RESULT\t{self.seq}\t{event_id}\t{outcome}\n'.encode())
@@ -515,17 +518,17 @@ class Bridge:
                 self.last_ack=time.monotonic()
                 self.baseline_pending=True
             filtered=self.gate.filter(self.tasks)
-            supports_reasons=bool(self.device_supported and self.device and self.device.get('firmware') in ('0.28','0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'))
-            supports_results=bool(supports_reasons and self.device.get('firmware') in ('0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'))
-            supports_progress=bool(supports_results and self.device.get('firmware') in ('0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48'))
+            supports_reasons=bool(self.device_supported and self.device and self.device.get('firmware') in ('0.28','0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'))
+            supports_results=bool(supports_reasons and self.device.get('firmware') in ('0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'))
+            supports_progress=bool(supports_results and self.device.get('firmware') in ('0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'))
             signature=(data_ok,supports_reasons,supports_results,supports_progress,tuple(tuple(t.get(k,'') for k in ('id','title','state','done_key','wait_key','mood','wait_reason','result_hint','progress_hint')) for t in filtered))
             # 每 200ms 检查变化；无变化只保留 5 秒一次心跳。
             if not self.baseline_pending and signature==self.sent_signature and time.monotonic()-self.last_sent_at<5:
+                self.maintain_actions(stop)
                 self.maintain_voice(stop)
                 self.maintain_device(stop)
                 self.maintain_companion(stop)
                 self.maintain_note(stop)
-                self.maintain_actions(stop)
                 self.extras.maintain(self,stop)
                 return
             if self.baseline_pending:
@@ -553,11 +556,11 @@ class Bridge:
                     self.log.info(reply[:240].decode('ascii', errors='replace'))
             self.status('connected' if ack else 'waiting_ack', data_ok)
             if ack:
+                self.maintain_actions(stop)
                 self.maintain_voice(stop)
                 self.maintain_device(stop)
                 self.maintain_companion(stop)
                 self.maintain_note(stop)
-                self.maintain_actions(stop)
                 self.extras.maintain(self,stop)
             if time.monotonic() - self.last_ack > 15:
                 self.disconnect()

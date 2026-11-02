@@ -29,7 +29,7 @@ class CompanionTests(unittest.TestCase):
         self.bridge.device={'firmware':'0.34'}
 
     def test_requests_and_wire_validation(self):
-        for v in ({'action':'focus','operation':'start','minutes':1},{'action':'focus','operation':'start','minutes':True},
+        for v in ({'action':'focus','operation':'start','minutes':0},{'action':'focus','operation':'start','minutes':True},
                   {'action':'focus','operation':'stop','minutes':0},{'action':'focus','operation':'restart'}):
             with self.assertRaises(ValueError):validate_request(v)
         for minutes in (15,25,45):validate_request({'action':'focus','operation':'start','minutes':minutes})

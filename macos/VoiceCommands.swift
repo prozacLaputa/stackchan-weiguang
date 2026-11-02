@@ -8,7 +8,7 @@ enum VoiceLocalCommand:Equatable {
         if kind=="note",keys==["kind","text"],let text=value["text"] as? String,PanelModel.validNote(text) {return .note(text)}
         if kind=="help",keys==["kind","code"],let code=value["code"] as? String,["note_length","focus_duration"].contains(code) {return .help(code)}
         if kind=="focus",let op=value["operation"] as? String {
-            if op=="start",keys==["kind","operation","minutes"],let minutes=value["minutes"] as? Int,[15,25,45].contains(minutes) {return .focus(op,minutes)}
+            if op=="start",keys==["kind","operation","minutes"],let minutes=value["minutes"] as? Int,(1...240).contains(minutes) {return .focus(op,minutes)}
             if ["pause","resume","stop"].contains(op),keys==["kind","operation"] {return .focus(op,nil)}
         }
         throw VoiceCommandError("这条指令暂不支持。")
@@ -20,7 +20,7 @@ struct VoiceCommandOutcome {let ok:Bool;let message:String}
 extension PanelModel {
     func voiceCommandRequest(_ command:VoiceLocalCommand)throws->[String:Any] {
         if case let .help(code)=command {
-            throw VoiceCommandError(code=="note_length" ? "便签最多32字，请缩短后再说。":"目前支持15、25或45分钟；这次没有开始计时。")
+            throw VoiceCommandError(code=="note_length" ? "便签最多32字，请缩短后再说。":"支持 1–240 分钟，例如半小时、一小时或两小时；这次没有开始计时。")
         }
         guard !busy else {throw VoiceCommandError("机器人正在处理上一条操作，请稍后再说。")}
         switch command {
@@ -33,8 +33,8 @@ extension PanelModel {
             guard focusAvailable else {throw VoiceCommandError("机器人尚未连接或计时状态未同步，这次没有操作。")}
             if op=="start" {
                 guard !focusActive else {throw VoiceCommandError("已经有一轮计时，先结束当前番茄钟再开始新的。")}
-                guard let minutes=minutes,[15,25,45].contains(minutes) else {throw VoiceCommandError("目前支持15、25或45分钟。")}
-                return ["action":"focus","operation":"start","minutes":minutes]
+                guard let minutes=minutes,(1...240).contains(minutes) else {throw VoiceCommandError("请输入 1–240 分钟。")}
+                guard focusDurationSupported(minutes) else {throw VoiceCommandError("这个时长需要先通过 USB 更新机器人。")};return ["action":"focus","operation":"start","minutes":minutes]
             }
             if op=="pause" && !focusRunning {throw VoiceCommandError("当前没有正在运行的番茄钟。")}
             if op=="resume" && !focusPaused {throw VoiceCommandError("当前没有暂停的番茄钟。")}
@@ -75,7 +75,7 @@ extension PanelModel {
                     let message:String
                     switch command {
                     case let .note(text):message="已贴好便签：\(text)"
-                    case let .focus("start",minutes):message="已开始\(minutes ?? 25)分钟番茄钟。"
+                    case let .focus("start",minutes):message="已开始\(minutes ?? 30)分钟番茄钟。"
                     case .focus("pause",_):message="番茄钟已暂停。"
                     case .focus("resume",_):message="番茄钟已继续。"
                     default:message="番茄钟已结束。"
@@ -94,7 +94,7 @@ extension PanelModel {
 
 func voiceCommandsSelfTest() {
     precondition((try? VoiceLocalCommand.decode(["kind":"focus","operation":"start","minutes":25])) == .focus("start",25))
-    for bad:[String:Any] in [["kind":"shell","command":"test"],["kind":"focus","operation":"start","minutes":5],
+    for bad:[String:Any] in [["kind":"shell","command":"test"],["kind":"focus","operation":"start","minutes":241],
                             ["kind":"note","text":String(repeating:"长",count:33)],["kind":"note","text":"便签","extra":true]] {
         precondition((try? VoiceLocalCommand.decode(bad))==nil)
     }

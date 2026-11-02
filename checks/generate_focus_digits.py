@@ -42,7 +42,7 @@ def raster(path, scale, width, height):
 
 def generate():
     lines=['#pragma once','#include <stdint.h>','// 由 checks/generate_focus_digits.py 生成；原创字形，不依赖第三方字体。','namespace FocusDigits {']
-    for name,scale in [('large',1),('compact',.70)]:
+    for name,scale in [('large',1),('compact',.70),('hoursCompact',.52)]:
         w,h,cw=round(38*scale),round(72*scale),round(16*scale)
         data=[];offsets=[]
         for index,path in enumerate(PATHS):

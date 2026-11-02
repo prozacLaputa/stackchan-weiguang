@@ -3,6 +3,23 @@ import re
 from control import valid_note_text
 
 
+def duration_number(text):
+    if text.isascii() and text.isdigit():return int(text) if len(text)<=3 else None
+    digits={'零':0,'一':1,'二':2,'两':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}
+    if text in digits:return digits[text]
+    if '百' in text:
+        if text.count('百')!=1:return None
+        head,tail=text.split('百')
+        if head not in digits or not digits[head]:return None
+        tail=tail.removeprefix('零');rest=duration_number(tail) if tail else 0
+        return digits[head]*100+rest if rest is not None and rest<100 else None
+    if '十' in text and text.count('十')==1:
+        head,tail=text.split('十')
+        if (head and (head not in digits or not digits[head])) or (tail and (tail not in digits or not digits[tail])):return None
+        return (digits[head] if head else 1)*10+(digits[tail] if tail else 0)
+    return None
+
+
 def parse_voice_command(text):
     if not isinstance(text,str) or not 1<=len(text)<=2000:return None
     value=text.strip().strip('。.!！?？')
@@ -18,11 +35,15 @@ def parse_voice_command(text):
     compact=re.sub(r'\s+','',value)
     # 来自实际原厂STT的有界转写差异；只在完整指令末尾识别，不模糊匹配整句。
     timer=r'(?:番茄钟|番茄中|番茄鐘|专注计时)'
-    start=re.fullmatch(r'(?:开始|启动|开)(?:一个|1个|个)?(?:(十五|二十五|四十五|[0-9一二三四五六七八九十两半]+)分钟(?:的)?)?'+timer,compact)
+    number=r'[0-9零一二三四五六七八九十百两]+'
+    start=re.fullmatch(r'(?:开始|启动|开)(?:一个|1个|个)?(?:(半小时|(?:'+number+r')(?:分钟|个?小时(?:半)?))(?:的)?)?'+timer,compact)
     if start:
-        duration=start[1] or '25'
-        minutes={'十五':15,'二十五':25,'四十五':45,'15':15,'25':25,'45':45}.get(duration)
-        if minutes is None:return {'kind':'help','code':'focus_duration'}
+        duration=start[1]
+        if duration is None or duration=='半小时':minutes=30
+        else:
+            match=re.fullmatch('('+number+r')(分钟|个?小时)(半)?',duration)
+            count=duration_number(match[1]);minutes=None if count is None else count*(60 if match[2].endswith('小时') else 1)+(30 if match[3] else 0)
+        if minutes is None or not 1<=minutes<=240:return {'kind':'help','code':'focus_duration'}
         return {'kind':'focus','operation':'start','minutes':minutes}
     for verbs,operation in [('暂停','pause'),('继续|恢复','resume'),('结束|停止','stop')]:
         if re.fullmatch(r'(?:'+verbs+r')(?:一下|1下)?'+timer,compact):

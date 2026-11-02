@@ -10,13 +10,15 @@ A StackChan desk companion for coding, focus sessions and music, with optional c
 
 Firmware + a local Mac bridge + a native control panel. Task sync uses USB or Bluetooth without robot Wi-Fi. Tasks, timers, notes, music metadata and local vision make no cloud-model calls. **Optional voice uses the factory cloud service, Mac internet access and your own valid device identity. It does not use a Codex subscription; pricing and long-term quotas remain unknown.** This independent project is not affiliated with M5Stack or OpenAI.
 
-**Experimental v0.49 · updated October 26, 2026.** This is a source update, without a signed/notarized Mac installer or prebuilt firmware. QQ Music display and pause/play were verified on hardware; NetEase playback and the natural return-to-work flow still await hands-on acceptance.
+**Experimental v0.50 · updated November 2, 2026.** This is a source update, without a signed/notarized Mac installer or prebuilt firmware. QQ Music display and pause/play were verified on hardware; NetEase playback and the natural return-to-work flow still await hands-on acceptance.
 
 ## What changed
 
-- **Readable two-line home card:** retain the small face and enlarge status/counts, using native 30px heading glyphs and a crisp 16px footer without scaling. New completions take priority; notes briefly yield to the completion notice while timers keep running.
-- **Hold for 0.3 seconds to open:** home cards and running, waiting or completed list cards open Codex while your finger is still down. Rounded borders and wider gaps separate rows; scrolling, leaving a card or a changed target cancels the action.
-- **More reliable state and response:** recover a turn-start event outside the initial log tail after a bridge restart, distinguish unknown state from zero running tasks, and collect navigation requests sooner. Only current Top8 conversations can open; no messages or approvals are sent.
+- **Everyday timer durations:** default to 30 minutes, with 30-minute, 1-hour and 2-hour shortcuts. Five-minute breaks and manually starting the next round are retained.
+- **Save custom durations:** add whole-minute durations from 1 to 240 on either Mac or Chan. Up to six custom entries are sorted and shared between both interfaces, persist across robot restarts and do not duplicate when added again. Save failures and conflicts are reported explicitly.
+- **Hour-aware countdown:** durations of at least an hour use `h:mm:ss`, retaining the thin digits and progress ring. With controls visible, dedicated smaller glyphs keep digits inside the ring. Editing saved choices does not change the current timer; ending a cycle returns to the 30-minute default.
+
+On Mac, expand “新增自定义时长” under Workbench → Timer, enter minutes and press Return or Add. The saved duration becomes selected; right-click a custom entry to delete it. On Chan, open Timer → Custom durations → Add, adjust with ±1/±5 and save/select. See [daily use](DAILY_USE.md#番茄钟便签与陪伴).
 
 Update the Mac bridge first, then the matching firmware. Routine task sync still works over Bluetooth; firmware flashing requires USB.
 
@@ -30,9 +32,14 @@ Update the Mac bridge first, then the matching firmware. Routine task sync still
 
 ## Preview
 
+<img src="docs/screenshots/robot-focus-two-hours.png" width="480" alt="Actual v0.50 two-hour countdown with progress ring" />
+
+Actual v0.50 framebuffer from a paused two-hour test timer, including the quiet waiting indicator in the upper-right corner.
+
+
 <img src="docs/screenshots/robot-note.png" width="480" alt="Actual robot framebuffer with a cat face and warm sticky note" />
 
-An actual device framebuffer with sample content, not a concept image. These screenshots are from v0.46 and show retained core features. The current console uses tabs; the old console image does not represent the entire new UI.
+An actual device framebuffer with sample content, not a concept image. The note, preparation-screen and Mac screenshots below are from v0.46 and show retained core features. The current console uses tabs; the old console image does not represent the entire new UI.
 
 <details>
 <summary>Focus timer and previous Mac console</summary>
@@ -49,7 +56,7 @@ An actual device framebuffer with sample content, not a concept image. These scr
 - **Tasks and return recap:** up to eight recently active Codex conversations, progress, waiting states and results. After a lock/absence of at least 30 seconds, show currently waiting tasks and reliably observed new results.
 - **Quiet alerts:** amber indicators and expressions. Hold a home or task-list card for about 0.3 seconds to request its Codex conversation without releasing your finger.
 - **Companion:** default/cat faces, blush, optional small head-touch nods, blinks, yawns and closed-eye rest without dimming.
-- **Focus and notes:** 15/25/45-minute progress-ring timer, five-minute breaks, daily totals and one persistent warm-yellow note of up to 32 characters.
+- **Focus and notes:** 30-minute default; 30/60/120-minute shortcuts, saved 1–240-minute custom durations and a progress-ring timer, five-minute breaks, daily totals and one persistent warm-yellow note of up to 32 characters.
 - **Music:** QQ Music/NetEase metadata, progress and previous/play-pause/next controls. A small face animation uses screen motion only.
 - **AirPods voice:** streaming replies, continuous conversation, interruption, chat bubbles, a compact floating call UI and global shortcut. Optional connection greetings and task-completion notices.
 - **Voice actions:** start/pause/resume/end a timer or write a note while explicitly in voice mode.

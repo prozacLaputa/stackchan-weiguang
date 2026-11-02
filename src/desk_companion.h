@@ -21,7 +21,7 @@ struct FocusTimer {
 // 专注到时自动休息五分钟；休息结束等待主动开始，不自动累计无人参与的轮次。
 struct FocusCycle:FocusTimer {
  enum Stage {work,rest};Stage stage=work;
- uint32_t focusTotal=1500,round=0,focusCompletions=0,lastBoundary=0,lastFocusEnd=0;
+ uint32_t focusTotal=1800,round=0,focusCompletions=0,lastBoundary=0,lastFocusEnd=0;
  bool boundary=false;
  bool resting()const{return stage==rest;}
  bool working()const{return stage==work&&phase==running;}

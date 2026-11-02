@@ -102,6 +102,7 @@ struct Companion:Codable {
     var remaining:Int, total:Int, welcome:Int
     var stage:String?=nil, focus_total:Int?=nil, round:Int?=nil
     var today_day:Int?=nil, today_seconds:Int?=nil, today_rounds:Int?=nil, summary_save_error:Int?=nil
+    var preset_revision:Int?=nil, custom_minutes:[Int]?=nil, preset_save_error:Int?=nil
     var resting:Bool {stage == "rest"}
     var chosenSeconds:Int {focus_total ?? total}
     func seconds(at now:Double,received:Double)->Int {focus_state == "running" ? max(0,remaining-Int(max(0,now-received))) : remaining}
@@ -179,17 +180,19 @@ final class PanelModel:ObservableObject {
     @Published var noteBaseRevision:Int?=nil
     @Published var noteMessage=""
     @Published var noteSuccess=true
-    @Published var focusMinutes=25
+    @Published var focusMinutes=30
+    @Published var focusPresetDraft=""
+    @Published var focusPresetMessage=""
     let root=FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Weiguang")
     var timer:Timer?
     var available:Bool {state?.deviceFresh() == true}
     var device:Device? {state?.bridge?.device}
     var companion:Companion? {state?.bridge?.companion}
     var note:DeskNote? {state?.bridge?.note}
-    var noteAvailable:Bool {available && ["0.46","0.47","0.48","0.49"].contains(device?.firmware ?? "") && state?.noteFresh()==true}
+    var noteAvailable:Bool {available && ["0.46","0.47","0.48","0.49","0.50"].contains(device?.firmware ?? "") && state?.noteFresh()==true}
     var noteConflict:Bool {noteDirty && noteBaseRevision != note?.revision}
     var noteStatus:String {
-        if let version=device?.firmware,!["0.46","0.47","0.48","0.49"].contains(version){return "连接 USB 更新后可用"}
+        if let version=device?.firmware,!["0.46","0.47","0.48","0.49","0.50"].contains(version){return "连接 USB 更新后可用"}
         guard noteAvailable,let n=note else{return "等待机器人同步 · 草稿可继续编辑"}
         if n.save_error==1{return "上次保存失败，原便签仍保留"}
         return n.state=="active" ? "已贴在机器人上" : n.state=="done" ? "已收起 · 可以重新贴上" : "还没有便签"
@@ -232,13 +235,13 @@ final class PanelModel:ObservableObject {
             self.refresh()
         }
     }
-    var focusAvailable:Bool {available && ["0.34","0.35","0.36","0.37","0.38","0.39","0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48","0.49"].contains(device?.firmware ?? "") && state?.companionFresh() == true}
+    var focusAvailable:Bool {available && ["0.34","0.35","0.36","0.37","0.38","0.39","0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48","0.49","0.50"].contains(device?.firmware ?? "") && state?.companionFresh() == true}
     var companionSettingsAvailable:Bool {available && device?.daily != nil && device?.away_rest != nil && device?.greeting != nil && device?.affection != nil}
     var focusRunning:Bool {companion?.focus_state == "running"}
     var focusPaused:Bool {companion?.focus_state == "paused"}
     var focusActive:Bool {focusRunning || focusPaused}
     var focusNextAvailable:Bool {focusAvailable && companion?.resting == true && companion?.focus_state == "done"}
-    var focusPauseAvailable:Bool {focusAvailable && ["0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48","0.49"].contains(device?.firmware ?? "")}
+    var focusPauseAvailable:Bool {focusAvailable && ["0.40","0.41","0.42","0.43","0.44","0.45","0.46","0.47","0.48","0.49","0.50"].contains(device?.firmware ?? "")}
     var focusSummaryTitle:String {
         guard state?.companionFresh() == true,let c=companion else{return "等待机器人同步"}
         guard let day=c.today_day else{return "更新固件后可记录"}
@@ -257,7 +260,7 @@ final class PanelModel:ObservableObject {
         if c.focus_state != "running" && c.focus_state != "paused"{return "准备好，再开始"}
         let seconds=c.seconds(at:Date().timeIntervalSince1970,received:state?.bridge?.companion_at ?? 0)
         let stage=c.stage == nil ? "" : "第 \(c.round ?? 1) 轮 · \(c.resting ? "休息" : "专注") · "
-        return seconds>0 ? stage + String(format:"%02d:%02d",seconds/60,seconds%60) + (focusPaused ? " · 已暂停" : "") : "等待设备确认结束"
+        return seconds>0 ? stage + Self.focusClock(seconds,hours:c.total>=3600) + (focusPaused ? " · 已暂停" : "") : "等待设备确认结束"
     }
     var presenceTitle:String {
         guard state?.companionFresh() == true else{return "Mac 状态待同步"}
@@ -267,10 +270,42 @@ final class PanelModel:ObservableObject {
         default:return "Mac 状态暂不可读"
         }
     }
+    static func focusClock(_ seconds:Int,hours:Bool)->String {hours ? String(format:"%d:%02d:%02d",seconds/3600,seconds/60%60,seconds%60) : String(format:"%02d:%02d",seconds/60,seconds%60)}
+    static func durationLabel(_ minutes:Int)->String {minutes%60==0 ? "\(minutes/60) 小时" : "\(minutes) 分钟"}
+    static func customDuration(_ value:String)->Int? {
+        let text=value.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !text.isEmpty,text.utf8.allSatisfy({$0>=48 && $0<=57}),let number=Int(text),(1...240).contains(number) else{return nil}
+        return number
+    }
+    var customFocusMinutes:[Int] {companion?.custom_minutes ?? []}
+    var focusPresetAvailable:Bool {focusAvailable && device?.firmware=="0.50" && companion?.preset_revision != nil}
+    var focusSelectionLocked:Bool {focusActive || focusNextAvailable || busy}
+    func focusDurationSupported(_ minutes:Int)->Bool {(1...(device?.firmware=="0.50" ? 240:90)).contains(minutes)}
+    func saveFocusPreset(_ add:Bool,minutes:Int?=nil){
+        guard focusPresetAvailable,!busy,let revision=companion?.preset_revision else{return}
+        guard let value=minutes ?? Self.customDuration(focusPresetDraft) else{focusPresetMessage="请输入 1–240 之间的整数分钟。";return}
+        let inputDraft=focusPresetDraft
+        let request:[String:Any]=["action":"focus","operation":add ? "add_preset":"remove_preset","minutes":value,"expected_revision":revision]
+        busy=true;focusPresetMessage="正在保存…"
+        run([root.appendingPathComponent("app/control.py").path],input:try? JSONSerialization.data(withJSONObject:request)){[weak self] result in
+            guard let self=self else{return};self.busy=false
+            if case let .success(data)=result,let reply=try? JSONDecoder().decode(ControlReply.self,from:data){
+                if reply.ok{
+                    self.acceptReply(reply)
+                    if add{
+                        if self.focusPresetDraft==inputDraft{self.focusPresetDraft=""}
+                        if !self.focusActive && !self.focusNextAvailable{self.focusMinutes=value}
+                    }else if self.focusMinutes==value && !self.focusActive && !self.focusNextAvailable{self.focusMinutes=30}
+                    self.focusPresetMessage=add ? "已保存到 Chan，重启后仍可选用。":"已删除这个自定义时长。"
+                }else{self.focusPresetMessage=reply.error=="conflict" ? "常用时长刚被修改，已保留输入，请同步后重试。" : reply.error=="full" ? "最多保存 6 个自定义时长，可右键已有时长删除。" : reply.error=="save_failed" ? "保存失败，原有时长仍保留，请重试。" : Self.errorText(reply.error ?? "unknown")}
+            }else{self.focusPresetMessage="尚未收到保存确认，请先查看同步后的时长；不会自动重发。"}
+            self.refresh()
+        }
+    }
     func focus(_ operation:String){
         guard focusAvailable else{return}
         var request:[String:Any]=["action":"focus","operation":operation]
-        if operation=="start"{request["minutes"]=focusMinutes}
+        if operation=="start"{guard !focusActive,focusDurationSupported(focusMinutes) else{return};request["minutes"]=focusMinutes}
         issue(request,saving:false)
     }
     var connectionTitle:String {
@@ -383,10 +418,12 @@ final class PanelModel:ObservableObject {
         if next.connected(),let latest=state?.bridge,let current=latest.note_at,let received=next.bridge?.note_at,received<current {
             next.bridge?.note=latest.note;next.bridge?.note_at=current;next.bridge?.note_error=latest.note_error
         }
+        let previousPhase=companion?.focus_state
         state=next
+        if next.companionFresh(),companion?.focus_state=="off",previousPhase != nil,previousPhase != "off"{focusMinutes=30}
         onTaskSnapshot?(next.taskVoiceSnapshot)
         acceptNote()
-        if next.companionFresh(),let c=next.bridge?.companion,(c.focus_state=="running" || c.focus_state=="paused" || c.focus_state=="done"),[15,25,45].contains(c.chosenSeconds/60){focusMinutes=c.chosenSeconds/60}
+        if next.companionFresh(),let c=next.bridge?.companion,(c.focus_state=="running" || c.focus_state=="paused" || c.focus_state=="done"),(1...240).contains(c.chosenSeconds/60){focusMinutes=c.chosenSeconds/60}
         if next.deviceFresh(),let d=next.bridge?.device {acceptDevice(d)}
         if message==Self.recoveryText("synced") && !next.deviceFresh(){
             message=next.paused == true ? "同步已暂停；需要时点“恢复同步”。" : "连接状态已变化，等待机器人新回执。"
@@ -397,8 +434,9 @@ final class PanelModel:ObservableObject {
             state?.bridge?.note=n;state?.bridge?.note_at=stamp;state?.bridge?.note_error=nil;acceptNote()
         }
         if let c=reply.companion,let stamp=reply.companion_at,stamp >= (state?.bridge?.companion_at ?? 0) {
+            if c.focus_state=="off",companion?.focus_state != nil,companion?.focus_state != "off"{focusMinutes=30}
             state?.bridge?.companion=c;state?.bridge?.companion_at=stamp;state?.bridge?.companion_error=nil
-            if (c.focus_state=="running" || c.focus_state=="paused" || c.focus_state=="done"),[15,25,45].contains(c.chosenSeconds/60){focusMinutes=c.chosenSeconds/60}
+            if (c.focus_state=="running" || c.focus_state=="paused" || c.focus_state=="done"),(1...240).contains(c.chosenSeconds/60){focusMinutes=c.chosenSeconds/60}
         }
         guard let d=reply.device,let stamp=reply.device_at else{return}
         if let current=state?.bridge?.device_at,stamp<current{return}
@@ -763,7 +801,7 @@ struct PanelView:View {
             HStack{Text("番茄钟").font(.system(size:14,weight:.semibold));Spacer();Text(model.presenceTitle).font(.system(size:11)).foregroundColor(quiet)}
             Text(model.focusTitle).font(.system(size:model.focusActive ? 28:17,weight:.light,design:.rounded)).monospacedDigit().foregroundColor(model.focusAvailable ? accent:quiet)
             HStack(spacing:14){
-                Picker("时长",selection:$model.focusMinutes){Text("15 分钟").tag(15);Text("25 分钟").tag(25);Text("45 分钟").tag(45)}.labelsHidden().pickerStyle(.segmented).frame(maxWidth:300).disabled(model.focusActive || model.focusNextAvailable || model.busy)
+                HStack(spacing:7){ForEach([30,60,120],id:\.self){minutes in Button(PanelModel.durationLabel(minutes)){model.focusMinutes=minutes}.buttonStyle(PanelActionStyle(prominent:model.focusMinutes==minutes)).disabled(model.focusSelectionLocked || !model.focusDurationSupported(minutes))}}
                 Spacer()
                 if model.focusActive {
                     if model.focusPauseAvailable {Button(model.focusPaused ? "继续":"暂停"){model.focus(model.focusPaused ? "resume":"pause")}.disabled(model.busy)}
@@ -775,8 +813,27 @@ struct PanelView:View {
                 }
                 else {Button("开始专注"){model.focus("start")}.buttonStyle(PanelActionStyle(prominent:true)).disabled(!model.focusAvailable || model.busy)}
             }
+            if !model.customFocusMinutes.isEmpty {
+                LazyVGrid(columns:[GridItem(.adaptive(minimum:92),spacing:8)],alignment:.leading,spacing:8){
+                    ForEach(model.customFocusMinutes,id:\.self){minutes in
+                        Button(PanelModel.durationLabel(minutes)){model.focusMinutes=minutes}
+                            .buttonStyle(PanelActionStyle(prominent:model.focusMinutes==minutes)).disabled(model.focusSelectionLocked)
+                            .contextMenu{Button("删除这个时长"){model.saveFocusPreset(false,minutes:minutes)}.disabled(!model.focusPresetAvailable || model.busy)}
+                    }
+                }.frame(maxWidth:330,alignment:.leading)
+            }
+            if !model.focusSelectionLocked {Text("本次："+PanelModel.durationLabel(model.focusMinutes)).font(.system(size:11)).foregroundColor(quiet)}
+            DisclosureGroup("＋ 新增自定义时长") {
+                HStack(spacing:10){
+                    TextField("分钟，1–240",text:$model.focusPresetDraft).textFieldStyle(.roundedBorder).frame(width:140).onSubmit{model.saveFocusPreset(true)}
+                    Button("添加"){model.saveFocusPreset(true)}.disabled(!model.focusPresetAvailable || model.busy || PanelModel.customDuration(model.focusPresetDraft)==nil)
+                }.padding(.top,8)
+                Text(model.focusPresetAvailable ? "保存到 Chan · 两边均可选用 · 最多 6 项，右键可删除":"连接并更新机器人后可保存自定义时长").font(.system(size:11)).foregroundColor(quiet).padding(.top,4)
+            }.font(.system(size:11)).tint(quiet)
+            if !model.focusPresetMessage.isEmpty{Text(model.focusPresetMessage).font(.system(size:11)).foregroundColor(quiet)}
+            if model.companion?.preset_save_error==1{Text("机器人未能保存自定义时长，请重新保存。").font(.system(size:11)).foregroundColor(.orange)}
             DisclosureGroup("计时说明") {
-                Text(["0.44","0.45","0.46","0.47","0.48","0.49"].contains(model.device?.firmware ?? "") ? "专注到时自动休息 5 分钟，休息结束点下一轮。两段均可暂停；结束取消整个循环。机器人重启只清除当前计时。" : "静音计时，关闭控制台或短暂断连仍会继续；机器人重启后清除。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
+                Text(["0.44","0.45","0.46","0.47","0.48","0.49","0.50"].contains(model.device?.firmware ?? "") ? "专注到时自动休息 5 分钟，休息结束点下一轮。两段均可暂停；结束取消整个循环。机器人重启只清除当前计时。" : "静音计时，关闭控制台或短暂断连仍会继续；机器人重启后清除。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true)
                 Text("今日专注按 Mac 的本地日期累计；完成一轮才计入轮数，提前结束也累计已专注的时间，暂停和休息时间不计入。").font(.system(size:11)).foregroundColor(quiet).fixedSize(horizontal:false,vertical:true).padding(.top,6)
             }.font(.system(size:11)).tint(quiet)
             Divider().overlay(Color.white.opacity(0.07))
@@ -1181,8 +1238,11 @@ final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
             focused.accept(focusState);precondition(focused.companion?.focus_state=="off")
             focused.acceptReply(ControlReply(ok:true,companion:companion,companion_at:clock));precondition(!focused.focusRunning)
             focusState.bridge?.companion=Companion(presence:"awake",focus_state:"running",remaining:880,total:900,welcome:0)
+            precondition(PanelModel().focusMinutes==30)
+            precondition(PanelModel.customDuration(" 120 ")==120 && PanelModel.customDuration("241")==nil && PanelModel.customDuration("1.5")==nil)
+            precondition(PanelModel.focusClock(7200,hours:true)=="2:00:00" && PanelModel.focusClock(3599,hours:true)=="0:59:59")
             let reopened=PanelModel();reopened.accept(focusState);precondition(reopened.focusMinutes==15)
-            for version in ["0.41","0.42","0.43","0.44","0.48","0.49"] {
+            for version in ["0.41","0.42","0.43","0.44","0.48","0.49","0.50"] {
                 var supported=pausedState;supported.bridge?.device?.firmware=version
                 let checked=PanelModel();checked.accept(supported)
                 precondition(checked.focusAvailable && checked.focusPauseAvailable)
@@ -1215,7 +1275,7 @@ final class AppDelegate:NSObject,NSApplicationDelegate,NSWindowDelegate {
             noteState.bridge?.note=DeskNote(revision:1,state:"active",text:"下班带充电器",save_error:0);noteState.bridge?.note_at=Date().timeIntervalSince1970
             let noteModel=PanelModel();noteModel.accept(noteState)
             precondition(noteModel.noteAvailable && noteModel.noteDraft=="下班带充电器")
-            for version in ["0.48","0.49"] {
+            for version in ["0.48","0.49","0.50"] {
                 var supported=noteState;supported.bridge?.device?.firmware=version
                 let checked=PanelModel();checked.accept(supported)
                 precondition(checked.noteAvailable && checked.focusAvailable && checked.focusPauseAvailable)

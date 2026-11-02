@@ -66,8 +66,9 @@ def validate_request(value):
         raise ValueError('invalid_request')
     if value['action'] == 'focus':
         operation=value.get('operation')
+        if operation in ('add_preset','remove_preset') and set(value)=={'action','operation','minutes','expected_revision'} and type(value['minutes']) is int and 1<=value['minutes']<=240 and type(value['expected_revision']) is int and 0<=value['expected_revision']<=4294967295:return value
         if operation in ('stop','pause','resume','next') and set(value)=={'action','operation'}: return value
-        if operation=='start' and set(value)=={'action','operation','minutes'} and type(value['minutes']) is int and value['minutes'] in (15,25,45): return value
+        if operation=='start' and set(value)=={'action','operation','minutes'} and type(value['minutes']) is int and 1<=value['minutes']<=240: return value
         raise ValueError('invalid_request')
     changes = value.get('changes')
     if set(value) != {'action', 'changes'} or not isinstance(changes, dict) or not changes:
@@ -81,20 +82,20 @@ def validate_request(value):
 def parse_device(raw, seq):
     parts = raw.decode('ascii').strip().split('\t')
     if len(parts) not in (14,16,25,29,30,31,41) or parts[:2] != ['DEVICE', str(seq)]: raise ValueError('invalid_device_reply')
-    if (parts[2],len(parts)) not in (('0.24',14),('0.25',16),('0.26',16),('0.28',16),('0.29',16),('0.30',25),('0.32',25),('0.33',25),('0.34',25),('0.35',29),('0.36',29),('0.37',30),('0.38',30),('0.39',30),('0.40',30),('0.41',31),('0.42',31),('0.43',31),('0.44',31),('0.45',31),('0.46',31),('0.47',31),('0.48',41),('0.49',41)) or parts[5] not in ('home', 'list', 'settings', 'game', 'focus'): raise ValueError('unsupported_device')
-    if parts[5]=='focus' and parts[2] not in ('0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'): raise ValueError('unsupported_device')
+    if (parts[2],len(parts)) not in (('0.24',14),('0.25',16),('0.26',16),('0.28',16),('0.29',16),('0.30',25),('0.32',25),('0.33',25),('0.34',25),('0.35',29),('0.36',29),('0.37',30),('0.38',30),('0.39',30),('0.40',30),('0.41',31),('0.42',31),('0.43',31),('0.44',31),('0.45',31),('0.46',31),('0.47',31),('0.48',41),('0.49',41),('0.50',41)) or parts[5] not in ('home', 'list', 'settings', 'game', 'focus'): raise ValueError('unsupported_device')
+    if parts[5]=='focus' and parts[2] not in ('0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49','0.50'): raise ValueError('unsupported_device')
     if parts[5]=='game' and parts[2]!='0.32': raise ValueError('unsupported_device')
     keys = ('battery', 'charging', 'resting', 'brightness', 'light', 'rest', 'pet', 'save_error', 'uptime', 'sync_age')
     numbers = [int(parts[i]) for i in (3, 4, 6, 7, 8, 9, 10, 11, 12, 13)]
     bounds = [(-1,100),(0,1),(0,1),(0,255),(0,3),(0,4),(0,1),(0,1),(0,4294967),(0,4294967)]
-    if parts[2] in ('0.25','0.26','0.28','0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
+    if parts[2] in ('0.25','0.26','0.28','0.29','0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49','0.50'):
         keys += ('wait_motion','done_motion')
         numbers += [int(parts[14]),int(parts[15])]
         bounds += [(0,1),(0,1)]
     if any(not low <= number <= high for number, (low, high) in zip(numbers, bounds)):
         raise ValueError('invalid_device_reply')
     device = dict(zip(keys, numbers), firmware=parts[2], page=parts[5])
-    if parts[2] in ('0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
+    if parts[2] in ('0.30','0.32','0.33','0.34','0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49','0.50'):
         states={'ready','moving','cooldown','disabled','unavailable','screen','release','sensor','checking'}
         results={'none','detected','moving','completed','skipped','stopped','failed'}
         reasons={'none','not-initialized','bus-init','power-init','torque-release','calibration',
@@ -110,19 +111,19 @@ def parse_device(raw, seq):
             raise ValueError('invalid_motion_reply')
         device.update(zip(('pet_cooldown_ms','head_sensor','pet_event','pet_age','head_down'),extra))
         device.update(motion_state=parts[16],motion_reason=parts[17],pet_result=parts[22],pet_reason=parts[23])
-    if parts[2] in ('0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
+    if parts[2] in ('0.35','0.36','0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49','0.50'):
         extra=[int(p) for p in parts[25:29]]
         if any(not 0<=v<=limit for v,limit in zip(extra,(2,1,1,1))):raise ValueError('invalid_device_reply')
         device.update(zip(('daily','away_rest','greeting','affection'),extra))
-    if parts[2] in ('0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
+    if parts[2] in ('0.37','0.38','0.39','0.40','0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49','0.50'):
         skin=int(parts[29])
         if skin not in (0,1):raise ValueError('invalid_device_reply')
         device['skin']=skin
-    if parts[2] in ('0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49'):
+    if parts[2] in ('0.41','0.42','0.43','0.44','0.45','0.46','0.47','0.48','0.49','0.50'):
         focus=int(parts[30])
         if focus not in (0,1):raise ValueError('invalid_device_reply')
         device['focus_motion']=focus
-    if parts[2] in ('0.48','0.49'):
+    if parts[2] in ('0.48','0.49','0.50'):
         names=('motion_fault_id','motion_fault_at','motion_fault_position','motion_fault_command','motion_fault_load',
                'motion_fault_phase','motion_fault_command_age','motion_fault_sample_gap','motion_recoverable')
         values=[int(parts[i]) for i in (31,33,34,35,36,37,38,39,40)]
@@ -137,27 +138,34 @@ def parse_device(raw, seq):
 
 def parse_companion(raw, seq):
     parts=raw.decode('ascii').strip().split('\t')
-    if len(parts) not in (7,10,14) or parts[:2]!=['COMPANION',str(seq)] or parts[2] not in ('awake','away','unknown') or parts[3] not in ('off','running','paused','done'):
+    if len(parts) not in (7,10,14,17) or parts[:2]!=['COMPANION',str(seq)] or parts[2] not in ('awake','away','unknown') or parts[3] not in ('off','running','paused','done'):
         raise ValueError('invalid_companion_reply')
     left,total,welcome=map(int,parts[4:7])
-    if not 0<=left<=total<=5400 or welcome not in (0,1): raise ValueError('invalid_companion_reply')
+    if not 0<=left<=total<=(14400 if len(parts)==17 else 5400) or welcome not in (0,1): raise ValueError('invalid_companion_reply')
     if (parts[3]=='off' and (left or total)) or (parts[3] in ('running','paused') and (not left or not total)) or (parts[3]=='done' and (left or not total)) or (welcome and parts[2]!='awake'):
         raise ValueError('invalid_companion_reply')
     result=dict(presence=parts[2],focus_state=parts[3],remaining=left,total=total,welcome=welcome)
     if len(parts)>=10:
         stage=parts[7];focus_total,round_number=map(int,parts[8:10])
-        if stage not in ('focus','rest') or not 60<=focus_total<=5400 or focus_total%60 or not 0<=round_number<=9999:
+        if stage not in ('focus','rest') or not 60<=focus_total<=(14400 if len(parts)==17 else 5400) or focus_total%60 or not 0<=round_number<=9999:
             raise ValueError('invalid_companion_reply')
         if parts[3]=='off':
             if stage!='focus' or round_number: raise ValueError('invalid_companion_reply')
         elif not round_number or (stage=='rest' and total!=300) or (stage=='focus' and (total!=focus_total or parts[3]=='done')):
             raise ValueError('invalid_companion_reply')
         result.update(stage=stage,focus_total=focus_total,round=round_number)
-    if len(parts)==14:
-        day,seconds,rounds,save_error=map(int,parts[10:])
+    if len(parts)>=14:
+        day,seconds,rounds,save_error=map(int,parts[10:14])
         if (day!=0 and not 10957<=day<=47482) or not 0<=seconds<=86400 or not 0<=rounds<=1440 or save_error not in (0,1) or (day==0 and (seconds or rounds)):
             raise ValueError('invalid_companion_reply')
         result.update(today_day=day,today_seconds=seconds,today_rounds=rounds,summary_save_error=save_error)
+    if len(parts)==17:
+        revision,error=int(parts[14]),int(parts[16])
+        raw_choices=parts[15]
+        if raw_choices!='-' and not all(v.isascii() and v.isdigit() for v in raw_choices.split(',')):raise ValueError('invalid_companion_reply')
+        choices=[] if raw_choices=='-' else [int(v) for v in raw_choices.split(',')]
+        if not 0<=revision<=4294967295 or error not in (0,1) or len(choices)>6 or choices!=sorted(set(choices)) or any(not 1<=v<=240 or v in (30,60,120) for v in choices) or (choices and not revision):raise ValueError('invalid_companion_reply')
+        result.update(preset_revision=revision,custom_minutes=choices,preset_save_error=error)
     return result
 
 

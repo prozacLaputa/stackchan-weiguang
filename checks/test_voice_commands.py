@@ -12,9 +12,11 @@ import factory_voice_client as client
 
 class VoiceCommandsTests(unittest.TestCase):
     def test_explicit_timer_commands(self):
-        for text in ('帮我开始一个25分钟番茄钟。','微光，请帮我开始一个二十五分钟的番茄钟','开始番茄钟','帮我开始1个25分钟的番茄钟。'):
+        for text in ('帮我开始一个25分钟番茄钟。','微光，请帮我开始一个二十五分钟的番茄钟','帮我开始1个25分钟的番茄钟。'):
             self.assertEqual(parse_voice_command(text),{'kind':'focus','operation':'start','minutes':25})
         self.assertEqual(parse_voice_command('请启动十五分钟专注计时')['minutes'],15)
+        for text,minutes in [('开始番茄钟',30),('开始半小时番茄钟',30),('开始一小时番茄钟',60),('开始两个小时番茄钟',120),('开始两小时番茄钟',120),('启动1小时半的番茄钟',90),('开始二百四十分钟番茄钟',240),('开始37分钟番茄钟',37)]:
+            self.assertEqual(parse_voice_command(text)['minutes'],minutes)
         self.assertEqual(parse_voice_command('暂停一下番茄钟'),{'kind':'focus','operation':'pause'})
         self.assertEqual(parse_voice_command('暂停一下番茄中。'),{'kind':'focus','operation':'pause'})
         self.assertEqual(parse_voice_command('继续番茄钟'),{'kind':'focus','operation':'resume'})
@@ -26,7 +28,7 @@ class VoiceCommandsTests(unittest.TestCase):
         self.assertEqual(parse_voice_command('寄个便签，下班带充电器。'),{'kind':'note','text':'下班带充电器'})
         self.assertEqual(parse_voice_command('记个便签：'+'长'*33),{'kind':'help','code':'note_length'})
     def test_unsupported_duration_is_explained_without_starting(self):
-        self.assertEqual(parse_voice_command('开始五分钟番茄钟'),{'kind':'help','code':'focus_duration'})
+        self.assertEqual(parse_voice_command('开始241分钟番茄钟'),{'kind':'help','code':'focus_duration'})
     def test_chat_quotes_negation_and_compound_requests_never_execute(self):
         for text in ('不要开始25分钟番茄钟','我想知道怎么开始25分钟番茄钟','开始番茄钟是什么意思',
                      '如果我说开始25分钟番茄钟你会怎样','开始25分钟番茄钟好吗','开始番茄钟？',

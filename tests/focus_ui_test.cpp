@@ -14,7 +14,7 @@ int main(){
  assert(FocusLayout::hit(50,210,true)==FocusHit::back);
  assert(FocusLayout::hit(150,210,true)==FocusHit::primary);
  assert(FocusLayout::hit(280,210,true)==FocusHit::stop);
- assert(FocusLayout::hit(150,155,true)==FocusHit::none&&FocusLayout::hit(150,155,false)==FocusHit::motion);
+ assert(FocusLayout::hit(230,155,true)==FocusHit::none&&FocusLayout::hit(230,155,false)==FocusHit::motion);
  assert(FocusLayout::hit(30,40,true)==FocusHit::none&&FocusLayout::hit(30,40,false)==FocusHit::shorter);
  // v4 -> v5 preserves all existing settings; the specifically requested new motion starts on.
  DeviceSettings s;assert(s.load(0x5704EB15u));assert(s.focusMotion&&s.skin==1&&s.light==1);

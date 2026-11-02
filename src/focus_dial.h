@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <vector>
 #include <stdint.h>
 #include "focus_digits.h"
 
@@ -11,15 +12,22 @@ inline float remainingRatio(uint32_t totalSeconds,uint32_t usedMs){
 }
 inline uint16_t ink(int r,int g,int b){return uint16_t((r>>3)<<11|(g>>2)<<5|(b>>3));}
 inline float cover(float distance,float radius){return std::max(0.0f,std::min(1.0f,radius+.5f-distance));}
-// 固定字宽，抗锯齿细笔画；字符不会随着秒数变化左右跳动。
-template<class Canvas> void digits(Canvas& canvas,uint32_t seconds,int centerY,bool compact,bool done){
+inline std::vector<int> clockGlyphs(uint32_t seconds,bool hours=false){
+ seconds=std::min(uint32_t(14400),seconds);
+ if(hours||seconds>=3600)return {int(seconds/3600),10,int(seconds/600%6),int(seconds/60%10),10,int(seconds%60/10),int(seconds%10)};
+ return {int(seconds/600),int(seconds/60%10),10,int(seconds%60/10),int(seconds%10)};
+}
+// 固定字宽，抗锯齿细笔画；小时模式沿用原生小一档字形，不缩放或截断。
+template<class Canvas> void digits(Canvas& canvas,uint32_t seconds,int centerY,bool compact,bool done,bool hours=false){
+ auto glyphs=clockGlyphs(seconds,hours);bool smallHours=compact&&glyphs.size()>5;
+ if(glyphs.size()>5)compact=true;
  using namespace FocusDigits;
  int w=compact?compactWidth:largeWidth,h=compact?compactHeight:largeHeight;
  int cw=compact?compactColon:largeColon,gap=compact?2:3;
  auto data=compact?FocusDigits::compact:large;auto offsets=compact?compactOffsets:largeOffsets;
- seconds=std::min(uint32_t(5999),seconds);
- int glyphs[]={int(seconds/600),int(seconds/60%10),10,int(seconds%60/10),int(seconds%10)};
- int x=(320-(4*w+cw+4*gap))/2,y=centerY-h/2;
+ if(smallHours){w=hoursCompactWidth;h=hoursCompactHeight;cw=hoursCompactColon;data=hoursCompact;offsets=hoursCompactOffsets;}
+ int widthTotal=gap*(glyphs.size()-1);for(int g:glyphs)widthTotal+=g==10?cw:w;
+ int x=(320-widthTotal)/2,y=centerY-h/2;
  for(int glyph:glyphs){
   int width=glyph==10?cw:w;const uint8_t* alpha=data+offsets[glyph];
   for(int py=0;py<h;py++)for(int px=0;px<width;px++){

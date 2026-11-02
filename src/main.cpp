@@ -24,6 +24,7 @@
 #include "focus_dial.h"
 #include "focus_waiting.h"
 #include "focus_summary.h"
+#include "focus_presets.h"
 #include "sticky_note.h"
 #include "local_camera.h"
 #include "visual_face.h"
@@ -90,7 +91,17 @@ bool persistNote(const StickyNote& next){
 }
 DesktopAction desktopAction;
 bool focusOpen=false,pressedInFocus=false,pressedFocusEntry=false;
-int focusMinutes=25;FocusHit pressedFocus=FocusHit::none;
+int focusMinutes=FocusPresets::defaultMinutes;FocusHit pressedFocus=FocusHit::none;
+FocusPresets focusPresets;bool focusPresetSaveFailed=false;
+int focusMenu=0,focusDraftMinutes=35,pressedFocusMenu=0;uint32_t pressedPresetRevision=0;
+String focusPresetMessage;
+bool persistFocusPresets(const FocusPresets& next){
+ uint32_t words[10];next.encode(words);Preferences prefs;bool ok=prefs.begin("weiguang_focus",false);
+ if(ok){ok=prefs.putBytes("presets",words,sizeof(words))==sizeof(words);prefs.end();}
+ focusPresetSaveFailed=!ok;if(ok)focusPresets=next;return ok;
+}
+String focusDurationLabel(int minutes){return minutes%60==0?String(minutes/60)+" 小时":String(minutes)+" 分钟";}
+
 FocusTimer::Phase pressedFocusPhase=FocusTimer::off;FocusCycle::Stage pressedFocusStage=FocusCycle::work;
 FocusPresentation focusPresentation;bool pressedFocusControls=false,pressedHomeFocus=false;uint32_t handledFocusCompletion=0,handledStageCompletion=0;
 FocusWaitingPress focusWaitingPress;bool focusActionFeedback=false;
@@ -540,25 +551,48 @@ void drawSettings(){
  }
  centered(settingsSaveFailed?"保存失败 · 返回时重试":settingsDirty?"正在保存…":"自动保存 · 重启后保留",223,settingsSaveFailed?0xFD20:MUTED);
 }
+void drawFocusMenu(){
+ centered(focusPresetMessage.length()?focusPresetMessage:focusMenu==1?"自定义时长":"新增时长 · 1–240 分钟",8,focusPresetMessage.length()?0xFD6B:MUTED);
+ if(focusMenu==1){
+  if(focusPresets.custom.empty())centered("点新增，保存你的常用时长",99,MUTED);
+  for(size_t i=0;i<focusPresets.custom.size();i++){
+   int x=12+(i%2)*154,y=36+(i/2)*46;bool chosen=focusMinutes==focusPresets.custom[i];
+   canvas.drawRoundRect(x,y,142,38,7,chosen?ACCENT:0x3186);
+   String label=focusDurationLabel(focusPresets.custom[i]);canvas.setFont(&fonts::efontCN_16);text(label,x+(142-canvas.textWidth(label))/2,y+11,chosen?ACCENT:MUTED);
+  }
+ }else{
+  String value=String(focusDraftMinutes);canvas.setFont(&HomeSans::status30);canvas.setTextSize(1);text(value,160-canvas.textWidth(value)/2,66,ACCENT,&HomeSans::status30);
+  centered("分钟",104,MUTED);
+  const char* steps[]={"-5","-1","+1","+5"};
+  for(int i=0;i<4;i++){int x=12+i*76;canvas.drawRoundRect(x,126,68,44,7,0x3186);text(steps[i],x+24,140,ACCENT);}
+ }
+ canvas.drawRoundRect(12,186,96,48,8,0x3186);text("返回",44,202,MUTED);
+ canvas.drawRoundRect(120,186,188,48,8,ACCENT);
+ String label=focusMenu==2?"保存并选用":focusPresets.custom.size()<FocusPresets::maxCustom?"+ 新增":"已存满 6 项";
+ canvas.setFont(&fonts::efontCN_16);text(label,120+(188-canvas.textWidth(label))/2,202,ACCENT);
+}
 void drawFocus(uint32_t now){
+ if(focusMenu&&companion.focus.phase==FocusTimer::off){drawFocusMenu();return;}
+
  auto& timer=companion.focus;bool started=timer.phase!=FocusTimer::off;
  bool controls=focusPresentation.controls(now,started);
  auto waiting=focusWaitingTarget(ui.tasks,syncState.live(),ui.currentIndex);
  bool card=started&&controls&&waiting.task;
  uint32_t left=timer.active()?timer.remaining(now):timer.phase==FocusTimer::done?0:focusMinutes*60;
  if(started)FocusDial::ring(canvas,FocusDial::remainingRatio(timer.total,timer.used(now)),controls,timer.phase==FocusTimer::paused,card,timer.resting());
- FocusDial::digits(canvas,left,started?(controls?(card?110:108):120):108,!started||controls,timer.phase==FocusTimer::done);
+ FocusDial::digits(canvas,left,started?(controls?(card?110:108):120):108,!started||controls,timer.phase==FocusTimer::done,(started?timer.total:focusMinutes*60)>=3600);
  if(timer.resting())centered(timer.phase==FocusTimer::done?"休息结束":"休息",controls?148:57,0x8559);
  if(!controls){if(waiting.task)canvas.fillCircle(250,42,4,0xFD6B);return;}
  if(!started){
   centered(focusSummarySaveFailed?"专注记录保存失败":focusSummaryText(),3,focusSummarySaveFailed?0xFD6B:MUTED);
-  const int choices[]={15,25,45};
+  const int choices[]={30,60,120};
   for(int i=0;i<3;i++){
    int x=12+i*102;bool chosen=focusMinutes==choices[i];
    canvas.drawRoundRect(x,24,92,40,7,chosen?ACCENT:0x3186);
-   text(String(choices[i])+" 分钟",x+18,36,chosen?ACCENT:MUTED);
+   String label=focusDurationLabel(choices[i]);canvas.setFont(&fonts::efontCN_16);text(label,x+(92-canvas.textWidth(label))/2,36,chosen?ACCENT:MUTED);
   }
-  canvas.drawRoundRect(12,146,296,32,7,0x3186);text("到时轻点头",28,154,MUTED);text(settings.focusMotion?"开启":"关闭",258,154,settings.focusMotion?ACCENT:MUTED);
+  canvas.drawRoundRect(12,138,142,40,7,0x3186);text("自定义时长",43,150,focusPresetSaveFailed?0xFD6B:ACCENT);
+  canvas.drawRoundRect(166,138,142,40,7,0x3186);text(settings.focusMotion?"到时点头 · 开":"到时点头 · 关",181,150,MUTED);
  }else if(card){
   const uint16_t amber=0xFD6B;canvas.drawRoundRect(12,3,296,37,7,0x6244);
   const char* feedback=focusActionFeedback?desktopAction.feedback(now):"";
@@ -584,13 +618,34 @@ void drawFocus(uint32_t now){
   canvas.setFont(&fonts::efontCN_16);text(labels[i],x[i]+(width[i]-canvas.textWidth(labels[i]))/2,202,i==1?ACCENT:MUTED);
  }
 }
-void openFocus(uint32_t now){focusOpen=true;settingsOpen=false;ui.details=false;focusActionFeedback=false;focusWaitingPress.reset();focusPresentation.hide();standby.wake(now);daily.cancel(now);fullRedraw=true;}
+void openFocus(uint32_t now){focusMenu=0;focusPresetMessage="";focusOpen=true;settingsOpen=false;ui.details=false;focusActionFeedback=false;focusWaitingPress.reset();focusPresentation.hide();standby.wake(now);daily.cancel(now);fullRedraw=true;}
 void focusTap(FocusHit hit,uint32_t now){
+ if(focusMenu&&companion.focus.phase==FocusTimer::off){
+  focusPresetMessage="";
+  if(hit==FocusHit::back)focusMenu=focusMenu==2?1:0;
+  else if(focusMenu==1){
+   int i=int(hit)-int(FocusHit::item0);
+   if(i>=0&&i<int(focusPresets.custom.size())){focusMinutes=focusPresets.custom[i];focusMenu=0;}
+   else if(hit==FocusHit::add){if(focusPresets.custom.size()<FocusPresets::maxCustom){focusMenu=2;focusDraftMinutes=35;}else focusPresetMessage="已存满 · 可在 Mac 删除";}
+  }else{
+   int i=int(hit)-int(FocusHit::minus5);const int step[]={-5,-1,1,5};
+   if(i>=0&&i<4)focusDraftMinutes=std::max(1,std::min(FocusPresets::maxMinutes,focusDraftMinutes+step[i]));
+   else if(hit==FocusHit::save){
+    FocusPresets next;const char* error=focusPresets.update(focusPresets.revision,true,focusDraftMinutes,next);
+    if(*error)focusPresetMessage="常用时长已满";
+    else if((next.revision!=focusPresets.revision||focusPresetSaveFailed)&&!persistFocusPresets(next))focusPresetMessage="未能保存，请重试";
+    else{focusMinutes=focusDraftMinutes;focusMenu=0;}
+   }
+  }
+  standby.wake(now);daily.cancel(now);fullRedraw=true;return;
+ }
+
  auto phaseBefore=companion.focus.phase;auto stageBefore=companion.focus.stage;
  tickFocus(now);auto& timer=companion.focus;focusPresentation.reveal(now);
  if(hit==FocusHit::primary&&(phaseBefore!=timer.phase||stageBefore!=timer.stage)){fullRedraw=true;return;}
  if(hit==FocusHit::back){focusOpen=false;ui.returnHome(now);}
- else if(hit==FocusHit::stop)timer.stop();
+ else if(hit==FocusHit::stop){timer.stop();focusMinutes=FocusPresets::defaultMinutes;focusMenu=0;}
+ else if(hit==FocusHit::custom&&timer.phase==FocusTimer::off){focusMenu=1;focusPresetMessage=focusPresetSaveFailed?"时长保存异常，请重新保存":"";}
  else if(hit==FocusHit::motion&&timer.phase==FocusTimer::off){settings.focusMotion=!settings.focusMotion;settingsChanged();}
  else if(hit==FocusHit::primary){
   if(timer.phase==FocusTimer::running)timer.pause(now);
@@ -598,9 +653,9 @@ void focusTap(FocusHit hit,uint32_t now){
   else if(timer.phase==FocusTimer::done){if(timer.next(now))focusPresentation.hide();}
   else {timer.start(focusMinutes*60,now);focusPresentation.hide();}
  }else if(!timer.active()){
-  if(hit==FocusHit::shorter)focusMinutes=15;
-  if(hit==FocusHit::normal)focusMinutes=25;
-  if(hit==FocusHit::longer)focusMinutes=45;
+  if(hit==FocusHit::shorter)focusMinutes=30;
+  if(hit==FocusHit::normal)focusMinutes=60;
+  if(hit==FocusHit::longer)focusMinutes=120;
  }
  saveFocusSummary(true);standby.wake(now);daily.cancel(now);fullRedraw=true;
 }
@@ -681,7 +736,7 @@ void inspectProximityStandby(){
 void reply(const String& message,SyncTransport via){if(via==SyncTransport::ble)ble.reply(message+"\n");else Serial.println(message);}
 void deviceReport(const String& seq,SyncTransport via){
  String page=focusOpen?"focus":settingsOpen?"settings":ui.details?"list":"home";
- String report="DEVICE\t"+seq+"\t0.49\t"+String(battery)+"\t"+String(charging?1:0)+"\t"+page;
+ String report="DEVICE\t"+seq+"\t0.50\t"+String(battery)+"\t"+String(charging?1:0)+"\t"+page;
  report+="\t"+String(standby.resting()?1:0)+"\t"+String(displayBrightness);
  report+="\t"+String(settings.light)+"\t"+String(settings.rest)+"\t"+String(settings.petMotion?1:0);
  report+="\t"+String(settingsSaveFailed?1:0)+"\t"+String(millis()/1000)+"\t"+String(syncState.age(millis()));
@@ -710,7 +765,7 @@ void tickFocus(uint32_t now){
 void companionReport(const String& seq,SyncTransport via){
  uint32_t now=millis();
  tickFocus(now);
- reply("COMPANION\t"+seq+"\t"+companion.presence(now)+"\t"+companion.focus.name()+"\t"+String(companion.focus.remaining(now))+"\t"+String(companion.focus.total)+"\t"+String(companion.welcome(now)?1:0)+"\t"+companion.focus.stageName()+"\t"+String(companion.focus.focusTotal)+"\t"+String(companion.focus.round)+"\t"+String(focusSummary.day())+"\t"+String(focusSummary.seconds())+"\t"+String(focusSummary.rounds())+"\t"+String(focusSummarySaveFailed?1:0),via);
+ reply("COMPANION\t"+seq+"\t"+companion.presence(now)+"\t"+companion.focus.name()+"\t"+String(companion.focus.remaining(now))+"\t"+String(companion.focus.total)+"\t"+String(companion.welcome(now)?1:0)+"\t"+companion.focus.stageName()+"\t"+String(companion.focus.focusTotal)+"\t"+String(companion.focus.round)+"\t"+String(focusSummary.day())+"\t"+String(focusSummary.seconds())+"\t"+String(focusSummary.rounds())+"\t"+String(focusSummarySaveFailed?1:0)+"\t"+String(focusPresets.revision)+"\t"+focusPresets.csv().c_str()+"\t"+String(focusPresetSaveFailed?1:0),via);
 }
 bool receiveExtras(const String& kind,int& p,SyncTransport via){
  if(!(kind=="DESK_INFO"||kind=="DESK_STATE"||kind=="RECAP_SET"||kind=="MUSIC_SET"||kind=="DESK_POLL"||kind=="DESK_RESULT"))return false;
@@ -835,6 +890,15 @@ void receive(SyncTransport via=SyncTransport::usb){
   }else if(p<int(line.length())){reply("NOTE_ERROR\t"+seq+"\tinvalid",via);return;}
   reply("NOTE\t"+seq+"\t"+String(stickyNote.revision)+"\t"+stickyNote.state.c_str()+"\t"+StickyNote::hex(stickyNote.text).c_str()+"\t"+String(noteSaveFailed?1:0),via);return;
  }
+ if(kind=="FOCUS_PRESET"){
+  String seq=field(line,p),expected=field(line,p),action=field(line,p),minutes=field(line,p);
+  if(!number(seq)||seq.length()>10||!number(expected)||expected.length()>10||strtoull(expected.c_str(),nullptr,10)>UINT32_MAX||!number(minutes)||minutes.length()>3||!FocusPresets::valid(minutes.toInt())||(action!="add"&&action!="remove")||p<int(line.length())){reply("COMPANION_ERROR\t"+seq+"\tinvalid",via);return;}
+  FocusPresets next;const char* error=focusPresets.update(uint32_t(strtoull(expected.c_str(),nullptr,10)),action=="add",minutes.toInt(),next);
+  if(*error){reply("COMPANION_ERROR\t"+seq+"\t"+error,via);return;}
+  if((next.revision!=focusPresets.revision||focusPresetSaveFailed)&&!persistFocusPresets(next)){reply("COMPANION_ERROR\t"+seq+"\tsave_failed",via);return;}
+  if(companion.focus.phase==FocusTimer::off&&!FocusPresets::builtin(focusMinutes)&&std::find(focusPresets.custom.begin(),focusPresets.custom.end(),focusMinutes)==focusPresets.custom.end())focusMinutes=30;
+  fullRedraw=true;companionReport(seq,via);return;
+ }
  if(kind=="COMPANION_INFO"||kind=="COMPANION_SET"||kind=="FOCUS_SET"){
   String seq=field(line,p);uint32_t now=millis();
   if(!number(seq)||seq.length()>10){reply("ERROR\trequest",via);return;}
@@ -849,11 +913,11 @@ void receive(SyncTransport via=SyncTransport::usb){
    if(valid&&companion.accept(state.c_str(),uint32_t(strtoull(token.c_str(),nullptr,10)),now)){standby.wake(now);daily.cancel(now);fullRedraw=true;}
   }else if(kind=="FOCUS_SET"){
    String action=field(line,p),minutes=field(line,p);
-   valid=number(minutes)&&minutes.length()<=2&&p>=int(line.length())&&((action=="start"&&minutes.toInt()>=1&&minutes.toInt()<=90)||((action=="stop"||action=="pause"||action=="resume"||action=="next")&&minutes=="0"));
+   valid=number(minutes)&&minutes.length()<=3&&p>=int(line.length())&&((action=="start"&&FocusPresets::valid(minutes.toInt()))||((action=="stop"||action=="pause"||action=="resume"||action=="next")&&minutes=="0"));
    if(valid){
     if(action=="start"&&companion.focus.active()){reply("COMPANION_ERROR\t"+seq+"\tbusy",via);return;}
     if(action=="start"){focusMinutes=minutes.toInt();companion.focus.start(minutes.toInt()*60,now);openFocus(now);}
-    else if(action=="stop")companion.focus.stop();
+    else if(action=="stop"){companion.focus.stop();focusMinutes=FocusPresets::defaultMinutes;focusMenu=0;}
     else if(action=="next"){if(!companion.focus.next(now)){reply("COMPANION_ERROR\t"+seq+"\tbusy",via);return;}focusPresentation.hide();}
     else if(action=="pause"&&!companion.focus.pause(now)){reply("COMPANION_ERROR\t"+seq+"\tbusy",via);return;}
     else if(action=="resume"&&!companion.focus.resume(now)){reply("COMPANION_ERROR\t"+seq+"\tbusy",via);return;}
@@ -1011,6 +1075,11 @@ void setup(){
   size_t size=notes.getBytesLength("note");if(size){if(size>=13&&size<=109){std::string bytes(size,'\0');if(notes.getBytes("note",&bytes[0],size)!=size||!stickyNote.load(bytes))noteSaveFailed=true;}else noteSaveFailed=true;}notes.end();
  }
  Preferences stats;if(stats.begin("weiguang_focus",true)){uint32_t words[8];if(stats.getBytesLength("summary")==sizeof(words)&&stats.getBytes("summary",words,sizeof(words))==sizeof(words)){if(!focusSummary.load(words))focusSummarySaveFailed=true;}stats.end();}
+ Preferences durations;if(durations.begin("weiguang_focus",true)){
+  uint32_t words[10];size_t size=durations.getBytesLength("presets");
+  if(size&&(size!=sizeof(words)||durations.getBytes("presets",words,sizeof(words))!=sizeof(words)||!focusPresets.load(words)))focusPresetSaveFailed=true;
+  durations.end();
+ }
  Preferences prefs;if(prefs.begin("weiguang_ui",true)){settings.load(prefs.getUInt("prefs",settings.packed()));prefs.end();}
  standby.configure(settings.brightness(),settings.idleMs(),millis());standby.begin(millis());displayBrightness=settings.brightness();
  M5.Display.setRotation(1);M5.Display.setBrightness(displayBrightness);
@@ -1064,7 +1133,8 @@ void loop(){
 
    pressedInFocus=focusOpen;pressedFocusPhase=companion.focus.phase;pressedFocusStage=companion.focus.stage;
    pressedFocusControls=focusPresentation.controls(now,companion.focus.phase!=FocusTimer::off);
-   pressedFocus=FocusLayout::hit(t.x,t.y,companion.focus.phase!=FocusTimer::off);
+   pressedFocusMenu=focusMenu;pressedPresetRevision=focusPresets.revision;
+   pressedFocus=FocusLayout::hit(t.x,t.y,companion.focus.phase!=FocusTimer::off,focusMenu);
    bool waitingActionReady=desktopAction.armed&&!desktopAction.inFlight&&!(focusActionFeedback&&*desktopAction.feedback(now));
    focusWaitingPress.begin(focusWaitingTarget(ui.tasks,syncState.live(),ui.currentIndex),pressedInFocus&&pressedFocusControls,companion.focus.phase!=FocusTimer::off,waitingActionReady,t.x,t.y);
    if(pressedInFocus&&pressedFocusControls)focusPresentation.reveal(now);
@@ -1126,7 +1196,7 @@ void loop(){
      focusPresentation.reveal(now);fullRedraw=true;
     }else if(action.tap){
      if(!pressedFocusControls||pressedFocusPhase!=companion.focus.phase||pressedFocusStage!=companion.focus.stage){focusPresentation.reveal(now);fullRedraw=true;}
-     else if(pressedFocus==FocusLayout::hit(t.x,t.y,companion.focus.phase!=FocusTimer::off))focusTap(pressedFocus,now);
+     else if(pressedFocusMenu==focusMenu&&pressedPresetRevision==focusPresets.revision&&pressedFocus==FocusLayout::hit(t.x,t.y,companion.focus.phase!=FocusTimer::off,focusMenu))focusTap(pressedFocus,now);
     }
    }
    else if(pressedInSettings&&settingsOpen){
